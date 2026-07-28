@@ -2,12 +2,18 @@ import { getBoundingClientRect } from '@documenso/lib/client-only/get-bounding-c
 import { useDocumentElement } from '@documenso/lib/client-only/hooks/use-document-element';
 import { useCurrentEnvelopeEditor } from '@documenso/lib/client-only/providers/envelope-editor-provider';
 import { PDF_VIEWER_PAGE_SELECTOR } from '@documenso/lib/constants/pdf-viewer';
-import { FIELD_META_DEFAULT_VALUES } from '@documenso/lib/types/field-meta';
+import { type RvhoopFieldDef, rvhoopPlaceholder } from '@documenso/lib/constants/rvhoop-fields';
+import {
+  DEFAULT_FIELD_FONT_SIZE,
+  FIELD_META_DEFAULT_VALUES,
+  type TTextFieldMeta,
+} from '@documenso/lib/types/field-meta';
 import { nanoid } from '@documenso/lib/universal/id';
 import { canRecipientFieldsBeModified } from '@documenso/lib/utils/recipients';
 import { SignatureIcon } from '@documenso/ui/icons/signature';
 import { getRecipientColorStyles } from '@documenso/ui/lib/recipient-colors';
 import { cn } from '@documenso/ui/lib/utils';
+import { RvhoopFieldPalette } from '@documenso/ui/primitives/document-flow/rvhoop-field-palette';
 import { FRIENDLY_FIELD_TYPE } from '@documenso/ui/primitives/document-flow/types';
 import { msg } from '@lingui/core/macro';
 import { useLingui } from '@lingui/react/macro';
@@ -30,6 +36,37 @@ const MIN_WIDTH_PX = 36;
 
 const DEFAULT_HEIGHT_PX = MIN_HEIGHT_PX * 2.5;
 const DEFAULT_WIDTH_PX = MIN_WIDTH_PX * 2.5;
+
+// RVHOOP FORK ADDITION. An RVHoop field arrives already holding its value, so it
+// drops at a size that value fits in rather than at the blank-field default — a
+// park address or an itemized breakdown landing in a 90×30 box means the manager
+// resizes every single field they place.
+const RVHOOP_WIDTH_PX = 150;
+const RVHOOP_BLOCK_WIDTH_PX = 260;
+const RVHOOP_BLOCK_HEIGHT_PX = 92;
+
+/**
+ * RVHOOP FORK ADDITION. The fieldMeta a palette field is placed with.
+ *
+ * Read-only because every catalogued field restates a term RVHoop's billing
+ * engine already froze — there is nothing for a signer to enter, and one who
+ * could edit "Monthly Rate" on the way past would be agreeing to a figure that
+ * will never be charged. Never `required`, because Documenso treats read-only
+ * and required as a contradiction and refuses to save it. And the placeholder
+ * text is load-bearing in both directions: Documenso rejects a read-only field
+ * with no text, and a document raised outside RVHoop should read as visibly
+ * unfilled rather than print an empty box where the rent belongs.
+ */
+export const rvhoopFieldMeta = (field: RvhoopFieldDef): TTextFieldMeta => ({
+  type: 'text',
+  label: field.label,
+  text: rvhoopPlaceholder(field.label),
+  readOnly: true,
+  required: false,
+  fontSize: DEFAULT_FIELD_FONT_SIZE,
+  textAlign: 'left',
+  rvhoop: { token: field.token },
+});
 
 export const fieldButtonList = [
   {
@@ -99,6 +136,10 @@ export const EnvelopeEditorFieldDragDrop = ({
   const { t } = useLingui();
 
   const [selectedField, setSelectedField] = useState<FieldType | null>(null);
+  // RVHOOP FORK ADDITION. Set alongside selectedField when the armed field came
+  // from the RVHoop palette; it is what turns a plain TEXT drop into a bound,
+  // read-only one. Cleared wherever the selection is (see clearSelectedField).
+  const [selectedRvhoopField, setSelectedRvhoopField] = useState<RvhoopFieldDef | null>(null);
 
   const { isWithinPageBounds, getPage } = useDocumentElement();
 
@@ -129,6 +170,54 @@ export const EnvelopeEditorFieldDragDrop = ({
     width: 0,
   });
 
+  // RVHOOP FORK ADDITION. The size the armed field should drop at, when it isn't
+  // the default. It lives in a ref rather than in fieldBounds directly because
+  // the MutationObserver below rewrites fieldBounds on every DOM mutation — a
+  // size written straight into fieldBounds is gone by the next render.
+  const pendingFieldBounds = useRef<{ height: number; width: number } | null>(null);
+
+  const defaultFieldBounds = () => ({ height: DEFAULT_HEIGHT_PX, width: DEFAULT_WIDTH_PX });
+
+  // RVHOOP FORK ADDITION. Arming a field type drops the current selection, which
+  // takes the floating settings panel down with it. Without this the panel sits
+  // over the page while the author is trying to click a spot on it, and swallows
+  // the placement click.
+  const clearFieldSelection = useCallback(() => editorFields.setSelectedField(null), [editorFields]);
+
+  const onRvhoopFieldSelect = useCallback(
+    (field: RvhoopFieldDef) => {
+      pendingFieldBounds.current = field.block
+        ? { height: RVHOOP_BLOCK_HEIGHT_PX, width: RVHOOP_BLOCK_WIDTH_PX }
+        : { height: DEFAULT_HEIGHT_PX, width: RVHOOP_WIDTH_PX };
+      fieldBounds.current = pendingFieldBounds.current;
+
+      clearFieldSelection();
+      setSelectedRvhoopField(field);
+      setSelectedField(FieldType.TEXT);
+    },
+    [clearFieldSelection],
+  );
+
+  // Every path that drops or abandons the armed field goes through here, so an
+  // RVHoop selection can never leak into the next plain field the manager places.
+  const clearSelectedField = useCallback(() => {
+    pendingFieldBounds.current = null;
+    fieldBounds.current = defaultFieldBounds();
+    setSelectedRvhoopField(null);
+    setSelectedField(null);
+  }, []);
+
+  const onFieldTypeSelect = useCallback(
+    (type: FieldType) => {
+      pendingFieldBounds.current = null;
+      fieldBounds.current = defaultFieldBounds();
+      clearFieldSelection();
+      setSelectedRvhoopField(null);
+      setSelectedField(type);
+    },
+    [clearFieldSelection],
+  );
+
   const onMouseMove = useCallback(
     (event: MouseEvent) => {
       setIsFieldWithinBounds(
@@ -155,7 +244,7 @@ export const EnvelopeEditorFieldDragDrop = ({
         !$page ||
         !isWithinPageBounds(event, PDF_VIEWER_PAGE_SELECTOR, fieldBounds.current.width, fieldBounds.current.height)
       ) {
-        setSelectedField(null);
+        clearSelectedField();
         return;
       }
 
@@ -185,15 +274,27 @@ export const EnvelopeEditorFieldDragDrop = ({
         width: fieldPageWidth,
         height: fieldPageHeight,
         recipientId: selectedRecipientId,
-        fieldMeta: structuredClone(FIELD_META_DEFAULT_VALUES[selectedField]),
+        // RVHOOP FORK ADDITION: a palette field is fully configured at drop time.
+        fieldMeta: selectedRvhoopField
+          ? rvhoopFieldMeta(selectedRvhoopField)
+          : structuredClone(FIELD_META_DEFAULT_VALUES[selectedField]),
       };
 
       editorFields.addField(field);
 
       setIsFieldWithinBounds(false);
-      setSelectedField(null);
+      clearSelectedField();
     },
-    [isWithinPageBounds, selectedField, selectedRecipientId, selectedEnvelopeItemId, getPage, editorFields],
+    [
+      isWithinPageBounds,
+      selectedField,
+      selectedRvhoopField,
+      selectedRecipientId,
+      selectedEnvelopeItemId,
+      getPage,
+      editorFields,
+      clearSelectedField,
+    ],
   );
 
   useEffect(() => {
@@ -204,7 +305,9 @@ export const EnvelopeEditorFieldDragDrop = ({
         return;
       }
 
-      fieldBounds.current = {
+      // RVHOOP FORK ADDITION: honour the armed field's own size instead of
+      // stamping the default back over it on the next DOM mutation.
+      fieldBounds.current = pendingFieldBounds.current ?? {
         height: Math.max(DEFAULT_HEIGHT_PX),
         width: Math.max(DEFAULT_WIDTH_PX),
       };
@@ -245,9 +348,9 @@ export const EnvelopeEditorFieldDragDrop = ({
             disabled={isFieldsDisabled}
             key={field.type}
             type="button"
-            onClick={() => setSelectedField(field.type)}
-            onMouseDown={() => setSelectedField(field.type)}
-            data-selected={selectedField === field.type ? true : undefined}
+            onClick={() => onFieldTypeSelect(field.type)}
+            onMouseDown={() => onFieldTypeSelect(field.type)}
+            data-selected={selectedField === field.type && !selectedRvhoopField ? true : undefined}
             className={cn(
               'group flex h-12 cursor-pointer items-center justify-center rounded-lg border border-border px-4 transition-colors',
               selectedRecipientStyles.fieldButton,
@@ -267,6 +370,19 @@ export const EnvelopeEditorFieldDragDrop = ({
         ))}
       </div>
 
+      {/*
+        RVHOOP FORK ADDITION. Below the generic field types deliberately: a
+        manager reaching for a signature or a date still finds those first, and
+        the pre-populated fields then read as what they are — a shortcut past
+        retyping data RVHoop already holds — rather than as a competing set of
+        primitives.
+      */}
+      <RvhoopFieldPalette
+        disabled={isFieldsDisabled}
+        selectedToken={selectedRvhoopField?.token ?? null}
+        onSelect={onRvhoopFieldSelect}
+      />
+
       {selectedField && (
         <div
           className={cn(
@@ -285,7 +401,10 @@ export const EnvelopeEditorFieldDragDrop = ({
             width: fieldBounds.current.width,
           }}
         >
-          <span className="text-[clamp(0.425rem,25cqw,0.825rem)]">{t(FRIENDLY_FIELD_TYPE[selectedField])}</span>
+          <span className="text-[clamp(0.425rem,25cqw,0.825rem)]">
+            {/* An RVHoop field reads as what it holds, not as "Text". */}
+            {selectedRvhoopField?.label ?? t(FRIENDLY_FIELD_TYPE[selectedField])}
+          </span>
         </div>
       )}
     </>

@@ -31,6 +31,9 @@ import { SignFieldTextDialog } from '~/components/dialogs/sign-field-text-dialog
 import { useEmbedSigningContext } from '~/components/embed/embed-signing-context';
 import { EnvelopeSignerPageRenderer } from '~/components/general/envelope-signing/envelope-signer-page-renderer';
 import { EnvelopePdfViewer } from '~/components/general/pdf-viewer/envelope-pdf-viewer';
+import { PdfViewerOverlay } from '~/components/general/pdf-viewer/pdf-viewer-overlay';
+import { PdfZoomControl, usePdfZoom } from '~/components/general/pdf-viewer/pdf-zoom-control';
+import { useDragToPan } from '~/components/general/pdf-viewer/use-drag-to-pan';
 
 import { BrandingLogo } from '../branding-logo';
 import { DocumentSigningAttachmentsPopover } from '../document-signing/document-signing-attachments-popover';
@@ -65,6 +68,16 @@ export const DocumentSigningPageViewV2 = () => {
 
   const { t } = useLingui();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+
+  // RVHOOP FORK ADDITION. A signer reading a lease in an embedded frame gets the
+  // page at whatever width the host gives it, which is regularly too small to
+  // read the terms they are about to agree to.
+  const { zoom, zoomIn, zoomOut, resetZoom, canZoomIn, canZoomOut } = usePdfZoom();
+
+  // RVHOOP FORK ADDITION. Drag the page to move around it once it's wider than
+  // the frame. Nothing here owns the left button's drag — a field is signed by
+  // clicking it, and a click that never moves is never a pan.
+  useDragToPan(scrollableContainerRef, { shouldStartPrimaryPan: () => true });
 
   /**
    * The total remaining fields remaining for the current recipient or selected assistant recipient.
@@ -235,7 +248,11 @@ export const DocumentSigningPageViewV2 = () => {
           </div>
         </div>
 
-        <div className="embed--DocumentContainer min-w-0 flex-1 overflow-y-auto" ref={scrollableContainerRef}>
+        {/* RVHOOP FORK ADDITION: overflow-x, so a zoomed-in page has somewhere to scroll to. */}
+        <div
+          className="embed--DocumentContainer min-w-0 flex-1 overflow-x-auto overflow-y-auto"
+          ref={scrollableContainerRef}
+        >
           <div className="flex flex-col">
             {/* Horizontal envelope item selector */}
             {envelopeItems.length > 1 && (
@@ -267,6 +284,7 @@ export const DocumentSigningPageViewV2 = () => {
                   customPageRenderer={EnvelopeSignerPageRenderer}
                   scrollParentRef={scrollableContainerRef}
                   errorMessage={PDF_VIEWER_ERROR_MESSAGES.signing}
+                  zoom={zoom}
                 />
               ) : (
                 <div className="flex flex-col items-center justify-center py-32">
@@ -295,9 +313,32 @@ export const DocumentSigningPageViewV2 = () => {
                 </a>
               )}
             </div>
+
+            {/* Run-off, so the zoom control isn't sitting on the last page at the end of the scroll. */}
+            <div className="h-20 flex-shrink-0" aria-hidden="true" />
           </div>
         </div>
       </div>
+
+      {/*
+        RVHOOP FORK ADDITION. Zoom, parked over the document's bottom-right
+        corner: a signer decides the page is too small halfway down page four,
+        and having to scroll back to the top to say so is the same problem again.
+        Anchored to the viewport rather than the page, so panning a zoomed page
+        doesn't drag the control off with it. Lifted clear of the mobile signing
+        widget, which is pinned to the bottom of the screen on small viewports.
+      */}
+      <PdfViewerOverlay containerRef={scrollableContainerRef}>
+        <PdfZoomControl
+          className="pointer-events-auto mb-24 lg:mb-0"
+          zoom={zoom}
+          canZoomIn={canZoomIn}
+          canZoomOut={canZoomOut}
+          onZoomIn={zoomIn}
+          onZoomOut={zoomOut}
+          onReset={resetZoom}
+        />
+      </PdfViewerOverlay>
     </div>
   );
 };

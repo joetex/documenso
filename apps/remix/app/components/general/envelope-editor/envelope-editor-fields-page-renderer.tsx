@@ -6,16 +6,24 @@ import {
   type PageRenderData,
   useCurrentEnvelopeRender,
 } from '@documenso/lib/client-only/providers/envelope-render-provider';
-import { FIELD_META_DEFAULT_VALUES } from '@documenso/lib/types/field-meta';
 import {
-  convertPixelToPercentage,
-  MIN_FIELD_HEIGHT_PX,
-  MIN_FIELD_WIDTH_PX,
-} from '@documenso/lib/universal/field-renderer/field-renderer';
+  RVHOOP_FIELD_GROUPS,
+  RVHOOP_FIELDS,
+  type RvhoopFieldDef,
+} from '@documenso/lib/constants/rvhoop-fields';
+import {
+  FIELD_DEFAULT_LINE_HEIGHT,
+  FIELD_META_DEFAULT_VALUES,
+  FIELD_MIN_LINE_HEIGHT,
+  MIN_FIELD_FONT_SIZE,
+  type TFieldMetaSchema,
+} from '@documenso/lib/types/field-meta';
+import { MIN_FIELD_HEIGHT_PX } from '@documenso/lib/universal/field-renderer/field-renderer';
 import { renderField } from '@documenso/lib/universal/field-renderer/render-field';
 import { getClientSideFieldTranslations } from '@documenso/lib/utils/fields';
 import { getOverlappingFieldPairs } from '@documenso/lib/utils/fields-overlap';
 import { canRecipientFieldsBeModified } from '@documenso/lib/utils/recipients';
+import { cn } from '@documenso/ui/lib/utils';
 import {
   Command,
   CommandDialog,
@@ -27,18 +35,117 @@ import {
 } from '@documenso/ui/primitives/command';
 import { FRIENDLY_FIELD_TYPE } from '@documenso/ui/primitives/document-flow/types';
 import { useLingui } from '@lingui/react/macro';
-import type { FieldType } from '@prisma/client';
+import { FieldType } from '@prisma/client';
 import Konva from 'konva';
 import type { KonvaEventObject } from 'konva/lib/Node';
 import type { Transformer } from 'konva/lib/shapes/Transformer';
-import { CopyPlusIcon, ShapesIcon, SquareStackIcon, TrashIcon, UserCircleIcon } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  CopyPlusIcon,
+  DatabaseIcon,
+  ShapesIcon,
+  SquareStackIcon,
+  TrashIcon,
+  UserCircleIcon,
+} from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
-import { fieldButtonList } from './envelope-editor-fields-drag-drop';
+import { EnvelopeEditorFieldSettings, useFieldSettingsTitle } from './envelope-editor-field-settings';
+import { fieldButtonList, rvhoopFieldMeta } from './envelope-editor-fields-drag-drop';
 import { EnvelopeRecipientSelectorCommand } from './envelope-recipient-selector';
 
+/**
+ * RVHOOP FORK ADDITION. The pre-populated field catalog, grouped once for the
+ * "Change Field Type" list rather than filtered on every keystroke.
+ */
+const RVHOOP_FIELDS_BY_GROUP = RVHOOP_FIELD_GROUPS.map((group) => ({
+  group,
+  fields: RVHOOP_FIELDS.filter((field) => field.group === group),
+})).filter((entry) => entry.fields.length > 0);
+
+/**
+ * RVHOOP FORK ADDITION. Geometry for the floating panel that hangs off the
+ * selected field: the gap between it and the field, how close to the edge of the
+ * window it may come, and the band its settings box is allowed to grow within
+ * before it starts scrolling inside itself.
+ */
+const HUD_GAP_PX = 8;
+const HUD_VIEWPORT_MARGIN_PX = 8;
+const HUD_MIN_SETTINGS_HEIGHT_PX = 220;
+const HUD_MAX_HEIGHT_PX = 520;
+
+/**
+ * RVHOOP FORK ADDITION. Where the floating panel is on screen, in viewport
+ * pixels: the horizontal centre of the field, and its top and bottom edges.
+ */
+type FieldHudAnchor = {
+  centerX: number;
+  top: number;
+  bottom: number;
+};
+
+/**
+ * RVHOOP FORK ADDITION. Whether a pointer event landed on something the canvas
+ * owns — a field, or one of the transformer's resize handles.
+ *
+ * Dragging the page now pans it, and the one thing that must not do is pan while
+ * the author is trying to drag a field across the paper. The DOM can't answer
+ * this (every field on a page is the same one canvas element), so ask Konva: the
+ * hit canvas already knows what is under that pixel.
+ */
+export const isPointerOverEditorField = (event: MouseEvent): boolean => {
+  const container = (event.target as HTMLElement | null)?.closest?.('.konva-container');
+
+  if (!container) {
+    return false;
+  }
+
+  const stage = Konva.stages.find((candidate) => candidate.container() === container);
+
+  if (!stage) {
+    return false;
+  }
+
+  const rect = stage.content.getBoundingClientRect();
+
+  return Boolean(stage.getIntersection({ x: event.clientX - rect.left, y: event.clientY - rect.top }));
+};
+
+/**
+ * RVHOOP FORK ADDITION. The largest font size that still fits a field this tall,
+ * or null when the field's own size already fits.
+ *
+ * Templates are laid over documents that were typeset by somebody else, and the
+ * lines an author drops a field onto are frequently set smaller than the 12pt a
+ * field is born with. Before this, every one of those fields had to be resized
+ * *and* then have a font size typed into it — twice the work, once per field,
+ * and the number is a guess until you look at the result.
+ *
+ * Only ever downwards. Growing a field back would overwrite a size the author
+ * chose on purpose, and a deliberately small font in a tall box is exactly how a
+ * multi-line text field is built.
+ *
+ * `fieldHeightPx` is in unscaled page units, which are the same units the font
+ * size is in — both are PDF points — so the comparison holds at any zoom.
+ */
+const fitFontSizeToHeight = (fieldMeta: TFieldMetaSchema | null | undefined, fieldHeightPx: number): number | null => {
+  if (!fieldMeta || typeof fieldMeta.fontSize !== 'number') {
+    return null;
+  }
+
+  const lineHeight = 'lineHeight' in fieldMeta ? fieldMeta.lineHeight || FIELD_DEFAULT_LINE_HEIGHT : undefined;
+
+  const fitted = Math.floor(fieldHeightPx / Math.max(lineHeight ?? FIELD_DEFAULT_LINE_HEIGHT, FIELD_MIN_LINE_HEIGHT));
+
+  const next = Math.max(MIN_FIELD_FONT_SIZE, Math.min(fieldMeta.fontSize, fitted));
+
+  return next < fieldMeta.fontSize ? next : null;
+};
+
 export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageRenderData }) => {
-  const { t, i18n } = useLingui();
+  const { i18n } = useLingui();
   const { envelope, editorFields, getRecipientColorKey } = useCurrentEnvelopeEditor();
   const { currentEnvelopeItem, setRenderError } = useCurrentEnvelopeRender();
 
@@ -47,7 +154,6 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
   const [selectedKonvaFieldGroups, setSelectedKonvaFieldGroups] = useState<Konva.Group[]>([]);
 
   const [isFieldChanging, setIsFieldChanging] = useState(false);
-  const [pendingFieldCreation, setPendingFieldCreation] = useState<Konva.Rect | null>(null);
 
   /**
    * Whether the field was automatically selected on creation (drag-drop or marquee).
@@ -140,6 +246,15 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
     if (!isDragEvent) {
       fieldUpdates.width = fieldPageWidth;
       fieldUpdates.height = fieldPageHeight;
+
+      // RVHOOP FORK ADDITION: a field dragged down to fit a line of small print
+      // takes its type size with it.
+      const existingMeta = editorFields.getFieldByFormId(fieldFormId)?.fieldMeta;
+      const fittedFontSize = fitFontSizeToHeight(existingMeta, (fieldPageHeight / 100) * unscaledViewport.height);
+
+      if (existingMeta && fittedFontSize !== null) {
+        fieldUpdates.fieldMeta = { ...existingMeta, fontSize: fittedFontSize };
+      }
     }
 
     editorFields.updateFieldByFormId(fieldFormId, fieldUpdates);
@@ -245,12 +360,10 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
     fieldGroup.off('dragend');
 
     // Set up field selection. Shift + click toggles this field in/out of the current
-    // multi-selection, so fields can be added to a group by clicking them --
-    // complementing marquee drag-selection. A plain click (no modifier) selects just
-    // this field.
+    // multi-selection, so fields can be added to a group by clicking them -- which
+    // is now the only way to build one, the marquee having made way for panning.
+    // A plain click (no modifier) selects just this field.
     fieldGroup.on('click', (event) => {
-      removePendingField();
-
       const isMultiSelectModifier = event.evt.shiftKey;
 
       if (isMultiSelectModifier) {
@@ -297,8 +410,6 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
 
     // Handle stage click to deselect.
     currentStage.on('mousedown', (e) => {
-      removePendingField();
-
       if (e.target === stage.current) {
         setSelectedFields([]);
         currentPageLayer.batchDraw();
@@ -307,8 +418,6 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
 
     // When an item is dragged, select it automatically.
     const onDragStartOrEnd = (e: KonvaEventObject<Event>) => {
-      removePendingField();
-
       if (!e.target.hasName('field-group')) {
         return;
       }
@@ -340,8 +449,14 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
    * Allows:
    * - Resizing
    * - Moving
-   * - Selecting multiple fields
-   * - Selecting empty area to create fields
+   *
+   * RVHOOP FORK ADDITION. It no longer draws a marquee rectangle across the
+   * page, which used to do two things: select every field it touched, and — on
+   * empty paper — offer to create a field the size of the box just drawn. Both
+   * are gone, because dragging across the page is now how you move a zoomed-in
+   * page around, and panning a document you cannot otherwise reach is worth more
+   * than either. Nothing is lost outright: shift+click still adds a field to the
+   * selection, and the palette still places fields.
    */
   const createInteractiveTransformer = (currentStage: Konva.Stage, currentPageLayer: Konva.Layer) => {
     const transformer = new Konva.Transformer({
@@ -351,8 +466,16 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
       ignoreStroke: true,
       flipEnabled: false,
       boundBoxFunc: (oldBox, newBox) => {
-        // Enforce minimum size
-        if (newBox.width < 30 || newBox.height < 20) {
+        // Enforce minimum size.
+        //
+        // RVHOOP FORK ADDITION: the height floor is now a floor on the FIELD, not
+        // on the screen. It was a flat 20 screen pixels, which on a page drawn at
+        // the usual scale is around 15pt of document — taller than the type on the
+        // lines these fields are being sized onto, so a field could not be made to
+        // fit one however hard you tried. Expressed in page units it also gets
+        // finer as you zoom in, which is the right way round: that is exactly when
+        // an author is working on something small.
+        if (newBox.width < 30 || newBox.height < MIN_FIELD_HEIGHT_PX * scale) {
           return oldBox;
         }
 
@@ -362,122 +485,10 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
 
     currentPageLayer.add(transformer);
 
-    // Add selection rectangle.
-    const selectionRectangle = new Konva.Rect({
-      fill: 'rgba(24, 160, 251, 0.3)',
-      visible: false,
-    });
-    currentPageLayer.add(selectionRectangle);
-
-    let x1: number;
-    let y1: number;
-    let x2: number;
-    let y2: number;
-
-    currentStage.on('mousedown touchstart', (e) => {
-      // do nothing if we mousedown on any shape
-      if (e.target !== currentStage) {
-        return;
-      }
-
-      const pointerPosition = currentStage.getPointerPosition();
-
-      if (!pointerPosition) {
-        return;
-      }
-
-      x1 = pointerPosition.x / scale;
-      y1 = pointerPosition.y / scale;
-      x2 = pointerPosition.x / scale;
-      y2 = pointerPosition.y / scale;
-
-      selectionRectangle.setAttrs({
-        x: x1,
-        y: y1,
-        width: 0,
-        height: 0,
-        visible: true,
-      });
-    });
-
-    currentStage.on('mousemove touchmove', () => {
-      // do nothing if we didn't start selection
-      if (!selectionRectangle.visible()) {
-        return;
-      }
-
-      selectionRectangle.moveToTop();
-
-      const pointerPosition = currentStage.getPointerPosition();
-
-      if (!pointerPosition) {
-        return;
-      }
-
-      x2 = pointerPosition.x / scale;
-      y2 = pointerPosition.y / scale;
-
-      selectionRectangle.setAttrs({
-        x: Math.min(x1, x2),
-        y: Math.min(y1, y2),
-        width: Math.abs(x2 - x1),
-        height: Math.abs(y2 - y1),
-      });
-    });
-
-    currentStage.on('mouseup touchend', () => {
-      // do nothing if we didn't start selection
-      if (!selectionRectangle.visible()) {
-        return;
-      }
-
-      // Update visibility in timeout, so we can check it in click event
-      setTimeout(() => {
-        selectionRectangle.visible(false);
-      });
-
-      const stageFieldGroups = currentStage.find('.field-group') || [];
-      const box = selectionRectangle.getClientRect();
-      const selectedFieldGroups = stageFieldGroups.filter(
-        (shape) => Konva.Util.haveIntersection(box, shape.getClientRect()) && shape.draggable(),
-      );
-      setSelectedFields(selectedFieldGroups);
-
-      const unscaledBoxWidth = box.width / scale;
-      const unscaledBoxHeight = box.height / scale;
-
-      // Create a field if no items are selected or the size is too small.
-      if (
-        selectedFieldGroups.length === 0 &&
-        unscaledBoxWidth > MIN_FIELD_WIDTH_PX &&
-        unscaledBoxHeight > MIN_FIELD_HEIGHT_PX &&
-        editorFields.selectedRecipient &&
-        canRecipientFieldsBeModified(editorFields.selectedRecipient, envelope.fields)
-      ) {
-        const pendingFieldCreation = new Konva.Rect({
-          name: 'pending-field-creation',
-          x: box.x / scale,
-          y: box.y / scale,
-          width: unscaledBoxWidth,
-          height: unscaledBoxHeight,
-          fill: 'rgba(24, 160, 251, 0.3)',
-        });
-
-        currentPageLayer.add(pendingFieldCreation);
-        setPendingFieldCreation(pendingFieldCreation);
-      }
-    });
-
     // Clicking empty stage area clears the selection. Field clicks -- including
     // Shift+click multi-select -- are handled by each field group's own click
     // handler in `unsafeRenderFieldOnLayer`.
     currentStage.on('click tap', (e) => {
-      // If we are selecting with the marquee rectangle, do nothing.
-      if (selectionRectangle.visible() && selectionRectangle.width() > 0 && selectionRectangle.height() > 0) {
-        return;
-      }
-
-      // If empty area clicked, remove all selections.
       if (e.target === stage.current) {
         setSelectedFields([]);
       }
@@ -618,6 +629,36 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
     }
   };
 
+  /**
+   * RVHOOP FORK ADDITION. Turn the selected fields into pre-populated RVHoop
+   * fields — the same thing the palette places, applied to a box that is already
+   * on the page and already the right size and shape.
+   *
+   * The type size and alignment are carried over rather than reset. Fitting a
+   * field to a line of someone else's small print is work, and swapping which
+   * value prints in it is no reason to throw that work away.
+   */
+  const changeSelectedFieldsToRvhoopField = (rvhoopField: RvhoopFieldDef) => {
+    const fields = selectedKonvaFieldGroups
+      .map((field) => editorFields.getFieldByFormId(field.id()))
+      .filter((field) => field !== undefined);
+
+    for (const field of fields) {
+      const existing = field.fieldMeta;
+      const meta = rvhoopFieldMeta(rvhoopField);
+
+      editorFields.updateFieldByFormId(field.formId, {
+        type: FieldType.TEXT,
+        fieldMeta: {
+          ...meta,
+          fontSize: typeof existing?.fontSize === 'number' ? existing.fontSize : meta.fontSize,
+          textAlign: existing && 'textAlign' in existing && existing.textAlign ? existing.textAlign : meta.textAlign,
+        },
+        id: undefined,
+      });
+    }
+  };
+
   const duplicatedSelectedFields = () => {
     const fields = selectedKonvaFieldGroups
       .map((field) => editorFields.getFieldByFormId(field.id()))
@@ -641,54 +682,42 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
   };
 
   /**
-   * Create a field from a pending field.
+   * RVHOOP FORK ADDITION. Where the floating panel should sit, in viewport
+   * pixels, or null when there is nothing to hang it off.
+   *
+   * Read live rather than held in state: it is called again on every scroll and
+   * resize, and re-rendering the settings form sixty times a second to move a box
+   * eight pixels is not a trade worth making.
+   *
+   * The transformer's client rect is already in the stage's scaled pixels, which
+   * are the container's own CSS pixels — so the container's position on screen
+   * plus that box is the field's position on screen, at any zoom.
    */
-  const createFieldFromPendingTemplate = (pendingFieldCreation: Konva.Rect, type: FieldType) => {
-    const pixelWidth = pendingFieldCreation.width();
-    const pixelHeight = pendingFieldCreation.height();
-    const pixelX = pendingFieldCreation.x();
-    const pixelY = pendingFieldCreation.y();
+  const getFieldHudAnchor = useCallback((): FieldHudAnchor | null => {
+    const container = konvaContainer.current;
+    const transformer = interactiveTransformer.current;
 
-    removePendingField();
-
-    if (!currentEnvelopeItem || !editorFields.selectedRecipient) {
-      return;
+    if (!container || !transformer || transformer.nodes().length === 0) {
+      return null;
     }
 
-    const { fieldX, fieldY, fieldWidth, fieldHeight } = convertPixelToPercentage({
-      width: pixelWidth,
-      height: pixelHeight,
-      positionX: pixelX,
-      positionY: pixelY,
-      pageWidth: unscaledViewport.width,
-      pageHeight: unscaledViewport.height,
-    });
+    const box = transformer.getClientRect();
+    const containerRect = container.getBoundingClientRect();
 
-    editorFields.addField({
-      envelopeItemId: currentEnvelopeItem.id,
-      page: pageNumber,
-      type,
-      positionX: fieldX,
-      positionY: fieldY,
-      width: fieldWidth,
-      height: fieldHeight,
-      recipientId: editorFields.selectedRecipient.id,
-      fieldMeta: structuredClone(FIELD_META_DEFAULT_VALUES[type]),
-    });
-  };
+    const top = containerRect.top + box.y;
+    const bottom = top + box.height;
 
-  /**
-   * Remove any pending fields or rectangle on the canvas.
-   */
-  const removePendingField = () => {
-    setPendingFieldCreation(null);
-
-    const pendingFieldCreation = pageLayer.current?.find('.pending-field-creation') || [];
-
-    for (const field of pendingFieldCreation) {
-      field.destroy();
+    // The field has been scrolled out of the window; so has its panel.
+    if (bottom < 0 || top > window.innerHeight) {
+      return null;
     }
-  };
+
+    return {
+      centerX: containerRect.left + box.x + box.width / 2,
+      top,
+      bottom,
+    };
+  }, [konvaContainer]);
 
   if (!currentEnvelopeItem) {
     return null;
@@ -696,54 +725,31 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
 
   return (
     <>
+      {/*
+        RVHOOP FORK ADDITION. Rendered into the body and positioned against the
+        window rather than absolutely inside the page. A panel tall enough to hold
+        a field's settings, hung off a field near the bottom of the last page,
+        would otherwise run off the end of the scrollable area and be unreachable
+        — and a zoomed-in page now scrolls sideways inside a box that would clip
+        it too.
+      */}
       {selectedKonvaFieldGroups.length > 0 &&
         interactiveTransformer.current &&
         !isFieldChanging &&
-        !isAutoSelectedField && (
-          <FieldActionButtons
+        !isAutoSelectedField &&
+        createPortal(
+          <FieldActionHud
+            getAnchor={getFieldHudAnchor}
             handleDuplicateSelectedFields={duplicatedSelectedFields}
             handleDuplicateSelectedFieldsOnAllPages={duplicatedSelectedFieldsOnAllPages}
             handleDeleteSelectedFields={deletedSelectedFields}
             handleChangeRecipient={changeSelectedFieldsRecipients}
             handleChangeFieldType={changeSelectedFieldsType}
+            handleChangeToRvhoopField={changeSelectedFieldsToRvhoopField}
             selectedFieldFormId={selectedKonvaFieldGroups.map((field) => field.id())}
-            style={{
-              position: 'absolute',
-              top:
-                interactiveTransformer.current.y() + interactiveTransformer.current.getClientRect().height + 5 + 'px',
-              left:
-                interactiveTransformer.current.x() + interactiveTransformer.current.getClientRect().width / 2 + 'px',
-              transform: 'translateX(-50%)',
-              gap: '8px',
-              pointerEvents: 'auto',
-              zIndex: 50,
-            }}
-          />
+          />,
+          document.body,
         )}
-
-      {pendingFieldCreation && (
-        <div
-          style={{
-            position: 'absolute',
-            top: pendingFieldCreation.y() * scale + pendingFieldCreation.getClientRect().height + 5 + 'px',
-            left: pendingFieldCreation.x() * scale + pendingFieldCreation.getClientRect().width / 2 + 'px',
-            transform: 'translateX(-50%)',
-            zIndex: 50,
-          }}
-          // Don't use darkmode for this component, it should look the same for both light/dark modes.
-          className="grid w-max grid-cols-5 gap-x-1 gap-y-0.5 rounded-md border border-gray-300 bg-white p-1 text-gray-500 shadow-sm"
-        >
-          {fieldButtonList.map((field) => (
-            <button
-              key={field.type}
-              onClick={() => createFieldFromPendingTemplate(pendingFieldCreation, field.type)}
-              className="col-span-1 w-full flex-shrink-0 rounded-sm px-2 py-1 text-xs hover:bg-gray-100 hover:text-gray-600"
-            >
-              {t(field.name)}
-            </button>
-          ))}
-        </div>
-      )}
 
       {/* The element Konva will inject it's canvas into. */}
       <div className="konva-container absolute inset-0 z-10 w-full" ref={konvaContainer}></div>
@@ -751,30 +757,121 @@ export const EnvelopeEditorFieldsPageRenderer = ({ pageData }: { pageData: PageR
   );
 };
 
-type FieldActionButtonsProps = React.HTMLAttributes<HTMLDivElement> & {
+type FieldActionHudProps = {
+  /** RVHOOP FORK ADDITION. Where to hang the panel; see getFieldHudAnchor. */
+  getAnchor: () => FieldHudAnchor | null;
   handleDuplicateSelectedFields: () => void;
   handleDuplicateSelectedFieldsOnAllPages: () => void;
   handleDeleteSelectedFields: () => void;
   handleChangeRecipient: (recipientId: number) => void;
   handleChangeFieldType: (type: FieldType) => void;
+  /** RVHOOP FORK ADDITION. Swap the selection to a pre-populated RVHoop field. */
+  handleChangeToRvhoopField: (field: RvhoopFieldDef) => void;
   selectedFieldFormId: string[];
 };
 
-const FieldActionButtons = ({
+const FieldActionHud = ({
+  getAnchor,
   handleDuplicateSelectedFields,
   handleDuplicateSelectedFieldsOnAllPages,
   handleDeleteSelectedFields,
   handleChangeRecipient,
   handleChangeFieldType,
+  handleChangeToRvhoopField,
   selectedFieldFormId,
-  ...props
-}: FieldActionButtonsProps) => {
+}: FieldActionHudProps) => {
   const { t } = useLingui();
 
   const [showRecipientSelector, setShowRecipientSelector] = useState(false);
   const [showFieldTypeSelector, setShowFieldTypeSelector] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(true);
 
-  const { editorFields, envelope } = useCurrentEnvelopeEditor();
+  const { editorFields, envelope, isTemplate } = useCurrentEnvelopeEditor();
+
+  const hudRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * RVHOOP FORK ADDITION. The settings only make sense for one field at a time —
+   * with several selected the toolbar's bulk actions are the whole story.
+   */
+  const settingsField = selectedFieldFormId.length === 1 ? editorFields.selectedField : null;
+  const settingsTitle = useFieldSettingsTitle(settingsField?.type);
+
+  /**
+   * Keep the panel pinned to its field, and no taller than the room it has.
+   *
+   * Written straight onto the node instead of through state: this runs on every
+   * scroll frame, and the settings form underneath has no business re-rendering
+   * because the window moved.
+   */
+  useLayoutEffect(() => {
+    const el = hudRef.current;
+
+    if (!el) {
+      return;
+    }
+
+    const apply = (property: 'top' | 'bottom' | 'left' | 'maxHeight' | 'visibility', value: string) => {
+      if (el.style[property] !== value) {
+        el.style[property] = value;
+      }
+    };
+
+    const position = () => {
+      const anchor = getAnchor();
+
+      if (!anchor) {
+        apply('visibility', 'hidden');
+        return;
+      }
+
+      apply('visibility', 'visible');
+
+      const spaceBelow = window.innerHeight - anchor.bottom - HUD_GAP_PX - HUD_VIEWPORT_MARGIN_PX;
+      const spaceAbove = anchor.top - HUD_GAP_PX - HUD_VIEWPORT_MARGIN_PX;
+
+      // Flip above the field only when below genuinely can't hold the settings
+      // and above can do better — a panel that jumps sides on every scroll tick
+      // is harder to use than one that scrolls internally.
+      const placeAbove = spaceBelow < HUD_MIN_SETTINGS_HEIGHT_PX && spaceAbove > spaceBelow;
+      const available = Math.max(placeAbove ? spaceAbove : spaceBelow, 96);
+
+      apply('maxHeight', `${Math.min(HUD_MAX_HEIGHT_PX, available)}px`);
+
+      if (placeAbove) {
+        apply('top', 'auto');
+        apply('bottom', `${Math.round(window.innerHeight - anchor.top + HUD_GAP_PX)}px`);
+      } else {
+        apply('bottom', 'auto');
+        apply('top', `${Math.round(anchor.bottom + HUD_GAP_PX)}px`);
+      }
+
+      // Centred on the field, then held inside the window so a field near either
+      // margin doesn't push its own settings off the screen.
+      const halfWidth = el.offsetWidth / 2;
+      const left = Math.min(
+        Math.max(anchor.centerX, HUD_VIEWPORT_MARGIN_PX + halfWidth),
+        window.innerWidth - HUD_VIEWPORT_MARGIN_PX - halfWidth,
+      );
+
+      apply('left', `${Math.round(left)}px`);
+    };
+
+    position();
+
+    window.addEventListener('scroll', position, true);
+    window.addEventListener('resize', position);
+
+    // The panel changes width when it opens, collapses, or swaps field type.
+    const observer = new ResizeObserver(position);
+    observer.observe(el);
+
+    return () => {
+      window.removeEventListener('scroll', position, true);
+      window.removeEventListener('resize', position);
+      observer.disconnect();
+    };
+  }, [getAnchor]);
 
   /**
    * Decide the preselected field type in the command input.
@@ -832,59 +929,94 @@ const FieldActionButtons = ({
     return null;
   }, [editorFields.localFields, envelope.recipients, selectedFieldFormId]);
 
+  // RVHOOP FORK ADDITION. The bar was 24px buttons around 12px icons, which is
+  // under every touch-target guideline going and fiddly with a mouse besides.
+  const toolbarButtonClassName =
+    'flex h-9 w-9 items-center justify-center rounded-md text-gray-300 transition-colors hover:bg-white/10 hover:text-white';
+
   return (
-    <div className="flex flex-col items-center" {...props}>
-      <div className="group flex w-fit items-center justify-evenly gap-x-1 rounded-md border bg-gray-900 p-0.5">
+    <div ref={hudRef} className="fixed z-50 flex max-w-[calc(100vw-1rem)] -translate-x-1/2 flex-col items-center">
+      <div className="group flex w-fit flex-shrink-0 items-center justify-evenly gap-x-1 rounded-lg border bg-gray-900 p-1 shadow-lg">
         <button
           type="button"
           title={t`Change Recipient`}
-          className="rounded-sm p-1.5 text-gray-400 transition-colors hover:bg-white/10 hover:text-gray-100"
+          className={toolbarButtonClassName}
           onClick={() => setShowRecipientSelector(true)}
           onTouchEnd={() => setShowRecipientSelector(true)}
         >
-          <UserCircleIcon className="h-3 w-3" />
+          <UserCircleIcon className="h-5 w-5" />
         </button>
 
         <button
           type="button"
           title={t`Change Field Type`}
-          className="rounded-sm p-1.5 text-gray-400 transition-colors hover:bg-white/10 hover:text-gray-100"
+          className={toolbarButtonClassName}
           onClick={() => setShowFieldTypeSelector(true)}
           onTouchEnd={() => setShowFieldTypeSelector(true)}
         >
-          <ShapesIcon className="h-3 w-3" />
+          <ShapesIcon className="h-5 w-5" />
         </button>
 
         <button
           type="button"
           title={t`Duplicate`}
-          className="rounded-sm p-1.5 text-gray-400 transition-colors hover:bg-white/10 hover:text-gray-100"
+          className={toolbarButtonClassName}
           onClick={handleDuplicateSelectedFields}
           onTouchEnd={handleDuplicateSelectedFields}
         >
-          <CopyPlusIcon className="h-3 w-3" />
+          <CopyPlusIcon className="h-5 w-5" />
         </button>
 
         <button
           type="button"
           title={t`Duplicate on all pages`}
-          className="rounded-sm p-1.5 text-gray-400 transition-colors hover:bg-white/10 hover:text-gray-100"
+          className={toolbarButtonClassName}
           onClick={handleDuplicateSelectedFieldsOnAllPages}
           onTouchEnd={handleDuplicateSelectedFieldsOnAllPages}
         >
-          <SquareStackIcon className="h-3 w-3" />
+          <SquareStackIcon className="h-5 w-5" />
         </button>
 
         <button
           type="button"
           title={t`Remove`}
-          className="rounded-sm p-1.5 text-gray-400 transition-colors hover:bg-white/10 hover:text-gray-100"
+          className={toolbarButtonClassName}
           onClick={handleDeleteSelectedFields}
           onTouchEnd={handleDeleteSelectedFields}
         >
-          <TrashIcon className="h-3 w-3" />
+          <TrashIcon className="h-5 w-5" />
         </button>
+
+        {settingsField && (
+          <button
+            type="button"
+            title={isSettingsOpen ? t`Hide field settings` : t`Show field settings`}
+            className={cn(toolbarButtonClassName, 'ml-0.5 border-white/10 border-l')}
+            // Click only, unlike its neighbours: a toggle wired to both handlers
+            // fires twice on a touch device and lands back where it started.
+            onClick={() => setIsSettingsOpen((open) => !open)}
+          >
+            {isSettingsOpen ? <ChevronUpIcon className="h-5 w-5" /> : <ChevronDownIcon className="h-5 w-5" />}
+          </button>
+        )}
       </div>
+
+      {/*
+        RVHOOP FORK ADDITION. The settings, compacted onto the page beside the
+        field they belong to. It scrolls inside itself once it runs out of the
+        room the panel was given, so the last control is always reachable.
+      */}
+      {settingsField && isSettingsOpen && (
+        <div className="mt-1.5 flex min-h-0 w-72 flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl">
+          <h3 className="flex-shrink-0 border-border border-b px-3 py-2 font-semibold text-foreground text-xs">
+            {settingsTitle}
+          </h3>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5 [&_.h-10]:h-8 [&_fieldset]:gap-2 [&_input]:text-xs [&_label]:text-[11px] [&_textarea]:text-xs">
+            <EnvelopeEditorFieldSettings key={settingsField.formId} />
+          </div>
+        </div>
+      )}
 
       <CommandDialog position="start" open={showRecipientSelector} onOpenChange={setShowRecipientSelector}>
         <EnvelopeRecipientSelectorCommand
@@ -897,6 +1029,8 @@ const FieldActionButtons = ({
           }}
           recipients={envelope.recipients}
           fields={envelope.fields}
+          // RVHOOP FORK ADDITION: a template's recipients are numbered slots.
+          usePlaceholderLabels={isTemplate}
         />
       </CommandDialog>
 
@@ -931,6 +1065,39 @@ const FieldActionButtons = ({
                 );
               })}
             </CommandGroup>
+
+            {/*
+              RVHOOP FORK ADDITION. The pre-populated fields, offered here as
+              well as in the palette. Retyping a field's position and size just
+              to change which value prints in it is the kind of work this palette
+              exists to avoid — and "what is this box actually going to say?" is
+              the question an author asks with the box already in front of them.
+
+              Searched by group and token as well as label, so "rate", "monthly"
+              and "lease.monthlyRate" all reach the same field.
+            */}
+            {RVHOOP_FIELDS_BY_GROUP.map(({ group, fields }) => (
+              <CommandGroup key={group}>
+                <div className="mt-2 mb-1 ml-2 font-medium text-muted-foreground text-xs">
+                  {group} <span className="opacity-60">({t`RVHoop`})</span>
+                </div>
+
+                {fields.map((field) => (
+                  <CommandItem
+                    key={field.token}
+                    className="px-2"
+                    value={`${group} ${field.label} ${field.token}`}
+                    onSelect={() => {
+                      handleChangeToRvhoopField(field);
+                      setShowFieldTypeSelector(false);
+                    }}
+                  >
+                    <DatabaseIcon className="mr-2 h-4 w-4 flex-shrink-0" />
+                    <span className="truncate">{field.label}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            ))}
           </CommandList>
         </Command>
       </CommandDialog>

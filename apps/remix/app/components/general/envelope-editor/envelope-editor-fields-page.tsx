@@ -3,83 +3,43 @@ import { useCurrentEnvelopeEditor } from '@documenso/lib/client-only/providers/e
 import { useCurrentEnvelopeRender } from '@documenso/lib/client-only/providers/envelope-render-provider';
 import { PDF_VIEWER_ERROR_MESSAGES } from '@documenso/lib/constants/pdf-viewer-i18n';
 import type { NormalizedFieldWithContext } from '@documenso/lib/server-only/ai/envelope/detect-fields/types';
-import {
-  FIELD_META_DEFAULT_VALUES,
-  type TCheckboxFieldMeta,
-  type TDateFieldMeta,
-  type TDropdownFieldMeta,
-  type TEmailFieldMeta,
-  type TFieldMetaSchema,
-  type TInitialsFieldMeta,
-  type TNameFieldMeta,
-  type TNumberFieldMeta,
-  type TRadioFieldMeta,
-  type TSignatureFieldMeta,
-  type TTextFieldMeta,
-} from '@documenso/lib/types/field-meta';
+import { FIELD_META_DEFAULT_VALUES } from '@documenso/lib/types/field-meta';
 import { getEnvelopeItemPermissions } from '@documenso/lib/utils/envelope';
 import { getOverlappingFieldPairs } from '@documenso/lib/utils/fields-overlap';
 import { canRecipientFieldsBeModified } from '@documenso/lib/utils/recipients';
-import { AnimateGenericFadeInOut } from '@documenso/ui/components/animate/animate-generic-fade-in-out';
 import { cn } from '@documenso/ui/lib/utils';
 import { Alert, AlertDescription, AlertTitle } from '@documenso/ui/primitives/alert';
 import { Button } from '@documenso/ui/primitives/button';
 import { Separator } from '@documenso/ui/primitives/separator';
-import type { MessageDescriptor } from '@lingui/core';
 import { msg } from '@lingui/core/macro';
 import { useLingui } from '@lingui/react';
 import { Trans } from '@lingui/react/macro';
-import { DocumentStatus, FieldType, RecipientRole } from '@prisma/client';
+import { DocumentStatus, RecipientRole } from '@prisma/client';
 import { AlertTriangleIcon, FileTextIcon, PencilIcon, SparklesIcon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useRevalidator, useSearchParams } from 'react-router';
-import { isDeepEqual } from 'remeda';
-import { match } from 'ts-pattern';
+import { useRevalidator } from 'react-router';
 
 import { AiFeaturesEnableDialog } from '~/components/dialogs/ai-features-enable-dialog';
 import { AiFieldDetectionDialog } from '~/components/dialogs/ai-field-detection-dialog';
 import { EnvelopeItemEditDialog } from '~/components/dialogs/envelope-item-edit-dialog';
-import { EditorFieldCheckboxForm } from '~/components/forms/editor/editor-field-checkbox-form';
-import { EditorFieldDateForm } from '~/components/forms/editor/editor-field-date-form';
-import { EditorFieldDropdownForm } from '~/components/forms/editor/editor-field-dropdown-form';
-import { EditorFieldEmailForm } from '~/components/forms/editor/editor-field-email-form';
-import { EditorFieldInitialsForm } from '~/components/forms/editor/editor-field-initials-form';
-import { EditorFieldNameForm } from '~/components/forms/editor/editor-field-name-form';
-import { EditorFieldNumberForm } from '~/components/forms/editor/editor-field-number-form';
-import { EditorFieldRadioForm } from '~/components/forms/editor/editor-field-radio-form';
-import { EditorFieldSignatureForm } from '~/components/forms/editor/editor-field-signature-form';
-import { EditorFieldTextForm } from '~/components/forms/editor/editor-field-text-form';
 import { EnvelopePdfViewer } from '~/components/general/pdf-viewer/envelope-pdf-viewer';
+import { PdfViewerOverlay } from '~/components/general/pdf-viewer/pdf-viewer-overlay';
+import { PdfZoomControl, usePdfZoom } from '~/components/general/pdf-viewer/pdf-zoom-control';
+import { useDragToPan } from '~/components/general/pdf-viewer/use-drag-to-pan';
 import { useCurrentTeam } from '~/providers/team';
 
 import { EnvelopeEditorFieldDragDrop } from './envelope-editor-fields-drag-drop';
-import { EnvelopeEditorFieldsPageRenderer } from './envelope-editor-fields-page-renderer';
+import { EnvelopeEditorFieldsPageRenderer, isPointerOverEditorField } from './envelope-editor-fields-page-renderer';
 import { EnvelopeEditorInvalidDirectTemplateAlert } from './envelope-editor-invalid-direct-template-alert';
 import { EnvelopeRendererFileSelector } from './envelope-file-selector';
 import { EnvelopeRecipientSelector } from './envelope-recipient-selector';
 
-const FieldSettingsTypeTranslations: Record<FieldType, MessageDescriptor> = {
-  [FieldType.SIGNATURE]: msg`Signature Settings`,
-  [FieldType.FREE_SIGNATURE]: msg`Free Signature Settings`,
-  [FieldType.TEXT]: msg`Text Settings`,
-  [FieldType.DATE]: msg`Date Settings`,
-  [FieldType.EMAIL]: msg`Email Settings`,
-  [FieldType.NAME]: msg`Name Settings`,
-  [FieldType.INITIALS]: msg`Initials Settings`,
-  [FieldType.NUMBER]: msg`Number Settings`,
-  [FieldType.RADIO]: msg`Radio Settings`,
-  [FieldType.CHECKBOX]: msg`Checkbox Settings`,
-  [FieldType.DROPDOWN]: msg`Dropdown Settings`,
-};
-
 export const EnvelopeEditorFieldsPage = () => {
-  const [searchParams] = useSearchParams();
-
   const team = useCurrentTeam();
 
   const scrollableContainerRef = useRef<HTMLDivElement>(null);
 
-  const { envelope, editorFields, navigateToStep, editorConfig } = useCurrentEnvelopeEditor();
+  const { envelope, editorFields, navigateToStep, editorConfig, isTemplate } = useCurrentEnvelopeEditor();
 
   const { currentEnvelopeItem, setCurrentEnvelopeItem } = useCurrentEnvelopeRender();
 
@@ -89,12 +49,23 @@ export const EnvelopeEditorFieldsPage = () => {
   const [isAiEnableDialogOpen, setIsAiEnableDialogOpen] = useState(false);
   const { revalidate } = useRevalidator();
 
+  // RVHOOP FORK ADDITION. Placing a field on a page of small print means reading
+  // the small print first, and the page only ever got the width the editor had
+  // left over after the sidebar.
+  const { zoom, zoomIn, zoomOut, resetZoom, canZoomIn, canZoomOut } = usePdfZoom();
+
+  // RVHOOP FORK ADDITION. Drag anywhere to move around a zoomed page — across
+  // the paper included, now that the marquee is gone. The one exception is a
+  // drag that starts on a field or a resize handle, which is the author moving
+  // or resizing it and has nothing to do with the page underneath.
+  useDragToPan(scrollableContainerRef, {
+    shouldStartPrimaryPan: (event) => !isPointerOverEditorField(event),
+  });
+
   const envelopeItemPermissions = useMemo(
     () => getEnvelopeItemPermissions(envelope, envelope.recipients),
     [envelope, envelope.recipients],
   );
-
-  const selectedField = useMemo(() => structuredClone(editorFields.selectedField), [editorFields.selectedField]);
 
   /**
    * Debounce the fields used for overlap detection so we don't recompute on every
@@ -143,21 +114,7 @@ export const EnvelopeEditorFieldsPage = () => {
     editorFields.setSelectedField(targetField.formId);
   };
 
-  const updateSelectedFieldMeta = (fieldMeta: TFieldMetaSchema) => {
-    if (!selectedField) {
-      return;
-    }
-
-    const isMetaSame = isDeepEqual(selectedField.fieldMeta, fieldMeta);
-
-    if (!isMetaSame) {
-      editorFields.updateFieldByFormId(selectedField.formId, {
-        fieldMeta,
-      });
-    }
-  };
-
-  const onFieldDetectionComplete = (fields: NormalizedFieldWithContext[]) => {
+  const onFieldDetectionComplete =(fields: NormalizedFieldWithContext[]) => {
     for (const field of fields) {
       editorFields.addField({
         height: field.height,
@@ -204,7 +161,8 @@ export const EnvelopeEditorFieldsPage = () => {
 
   return (
     <div className="relative flex h-full">
-      <div className="flex h-full w-full flex-col overflow-y-auto px-2" ref={scrollableContainerRef}>
+      {/* RVHOOP FORK ADDITION: overflow-x, so a zoomed-in page has somewhere to scroll to. */}
+      <div className="flex h-full w-full flex-col overflow-x-auto overflow-y-auto px-2" ref={scrollableContainerRef}>
         {/* Horizontal envelope item selector */}
         <EnvelopeRendererFileSelector
           className="px-0"
@@ -291,6 +249,7 @@ export const EnvelopeEditorFieldsPage = () => {
               customPageRenderer={EnvelopeEditorFieldsPageRenderer}
               scrollParentRef={scrollableContainerRef}
               errorMessage={PDF_VIEWER_ERROR_MESSAGES.editor}
+              zoom={zoom}
             />
           ) : (
             <div className="flex flex-col items-center justify-center py-32">
@@ -304,7 +263,33 @@ export const EnvelopeEditorFieldsPage = () => {
             </div>
           )}
         </div>
+
+        {/*
+          RVHOOP FORK ADDITION. Run-off at the end of the document, so the zoom
+          control — which hangs over this corner permanently — isn't sitting on
+          top of the last page once you reach the bottom.
+        */}
+        {currentEnvelopeItem !== null && <div className="h-20 flex-shrink-0" aria-hidden="true" />}
       </div>
+
+      {/*
+        RVHOOP FORK ADDITION. Anchored to the viewer's bottom-right corner and
+        left there: still reachable on page nine, and still in the corner after
+        the page has been zoomed in and dragged sideways.
+      */}
+      {currentEnvelopeItem !== null && (
+        <PdfViewerOverlay containerRef={scrollableContainerRef}>
+          <PdfZoomControl
+            className="pointer-events-auto"
+            zoom={zoom}
+            canZoomIn={canZoomIn}
+            canZoomOut={canZoomOut}
+            onZoomIn={zoomIn}
+            onZoomOut={zoomOut}
+            onReset={resetZoom}
+          />
+        </PdfViewerOverlay>
+      )}
 
       {/* Right Section - Form Fields Panel */}
       {currentEnvelopeItem && envelope.recipients.length > 0 && (
@@ -322,6 +307,8 @@ export const EnvelopeEditorFieldsPage = () => {
               fields={envelope.fields}
               className="w-full"
               align="end"
+              // RVHOOP FORK ADDITION: a template's recipients are numbered slots.
+              usePlaceholderLabels={isTemplate}
             />
 
             {editorFields.selectedRecipient &&
@@ -385,134 +372,12 @@ export const EnvelopeEditorFieldsPage = () => {
             )}
           </section>
 
-          {/* Field details section. */}
-          <AnimateGenericFadeInOut key={editorFields.selectedField?.formId}>
-            {selectedField && (
-              <section>
-                <Separator className="my-4" />
-
-                {searchParams.get('devmode') && (
-                  <>
-                    <div className="px-4">
-                      <h3 className="mb-3 font-semibold text-foreground text-sm">
-                        <Trans>Developer Mode</Trans>
-                      </h3>
-
-                      <div className="space-y-2 rounded-md border border-border bg-muted/50 p-3 text-foreground text-sm">
-                        {selectedField.id && (
-                          <p>
-                            <span className="min-w-12 text-muted-foreground">
-                              <Trans>Field ID:</Trans>
-                            </span>{' '}
-                            {selectedField.id}
-                          </p>
-                        )}
-                        <p>
-                          <span className="min-w-12 text-muted-foreground">
-                            <Trans>Recipient ID:</Trans>
-                          </span>{' '}
-                          {selectedField.recipientId}
-                        </p>
-                        <p>
-                          <span className="min-w-12 text-muted-foreground">
-                            <Trans>Pos X:</Trans>
-                          </span>{' '}
-                          {selectedField.positionX.toFixed(2)}
-                        </p>
-                        <p>
-                          <span className="min-w-12 text-muted-foreground">
-                            <Trans>Pos Y:</Trans>
-                          </span>{' '}
-                          {selectedField.positionY.toFixed(2)}
-                        </p>
-                        <p>
-                          <span className="min-w-12 text-muted-foreground">
-                            <Trans>Width:</Trans>
-                          </span>{' '}
-                          {selectedField.width.toFixed(2)}
-                        </p>
-                        <p>
-                          <span className="min-w-12 text-muted-foreground">
-                            <Trans>Height:</Trans>
-                          </span>{' '}
-                          {selectedField.height.toFixed(2)}
-                        </p>
-                      </div>
-                    </div>
-
-                    <Separator className="my-4" />
-                  </>
-                )}
-
-                <div className="px-4 [&_label]:text-foreground/70 [&_label]:text-xs">
-                  <h3 className="font-semibold text-sm">{_(FieldSettingsTypeTranslations[selectedField.type])}</h3>
-
-                  {match(selectedField.type)
-                    .with(FieldType.SIGNATURE, () => (
-                      <EditorFieldSignatureForm
-                        value={selectedField?.fieldMeta as TSignatureFieldMeta | undefined}
-                        onValueChange={(value) => updateSelectedFieldMeta(value)}
-                      />
-                    ))
-                    .with(FieldType.CHECKBOX, () => (
-                      <EditorFieldCheckboxForm
-                        value={selectedField?.fieldMeta as TCheckboxFieldMeta | undefined}
-                        onValueChange={(value) => updateSelectedFieldMeta(value)}
-                      />
-                    ))
-                    .with(FieldType.DATE, () => (
-                      <EditorFieldDateForm
-                        value={selectedField?.fieldMeta as TDateFieldMeta | undefined}
-                        onValueChange={(value) => updateSelectedFieldMeta(value)}
-                      />
-                    ))
-                    .with(FieldType.DROPDOWN, () => (
-                      <EditorFieldDropdownForm
-                        value={selectedField?.fieldMeta as TDropdownFieldMeta | undefined}
-                        onValueChange={(value) => updateSelectedFieldMeta(value)}
-                      />
-                    ))
-                    .with(FieldType.EMAIL, () => (
-                      <EditorFieldEmailForm
-                        value={selectedField?.fieldMeta as TEmailFieldMeta | undefined}
-                        onValueChange={(value) => updateSelectedFieldMeta(value)}
-                      />
-                    ))
-                    .with(FieldType.INITIALS, () => (
-                      <EditorFieldInitialsForm
-                        value={selectedField?.fieldMeta as TInitialsFieldMeta | undefined}
-                        onValueChange={(value) => updateSelectedFieldMeta(value)}
-                      />
-                    ))
-                    .with(FieldType.NAME, () => (
-                      <EditorFieldNameForm
-                        value={selectedField?.fieldMeta as TNameFieldMeta | undefined}
-                        onValueChange={(value) => updateSelectedFieldMeta(value)}
-                      />
-                    ))
-                    .with(FieldType.NUMBER, () => (
-                      <EditorFieldNumberForm
-                        value={selectedField?.fieldMeta as TNumberFieldMeta | undefined}
-                        onValueChange={(value) => updateSelectedFieldMeta(value)}
-                      />
-                    ))
-                    .with(FieldType.RADIO, () => (
-                      <EditorFieldRadioForm
-                        value={selectedField?.fieldMeta as TRadioFieldMeta | undefined}
-                        onValueChange={(value) => updateSelectedFieldMeta(value)}
-                      />
-                    ))
-                    .with(FieldType.TEXT, () => (
-                      <EditorFieldTextForm
-                        value={selectedField?.fieldMeta as TTextFieldMeta | undefined}
-                        onValueChange={(value) => updateSelectedFieldMeta(value)}
-                      />
-                    ))
-                    .otherwise(() => null)}
-                </div>
-              </section>
-            )}
-          </AnimateGenericFadeInOut>
+          {/*
+            RVHOOP FORK ADDITION. The selected field's settings used to sit here,
+            below the field buttons and the RVHoop palette — which is a long way
+            down once the palette is in the way. They now hang off the field
+            itself; see envelope-editor-fields-page-renderer.tsx.
+          */}
         </div>
       )}
     </div>

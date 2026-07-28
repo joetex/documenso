@@ -16,7 +16,16 @@ export type EnvelopePdfViewerProps = {
   errorMessage: { title: MessageDescriptor; description: MessageDescriptor } | null;
 } & Omit<PDFViewerProps, 'data'>;
 
-export const EnvelopePdfViewer = ({ errorMessage, className, ...props }: EnvelopePdfViewerProps) => {
+export const EnvelopePdfViewer = ({
+  errorMessage,
+  className,
+  // RVHOOP FORK ADDITION. The 800px page width used to be a `max-w` on the
+  // element itself, which left zoom nothing to spend: the element has to be
+  // free to take the room it is given, so the cap moved onto the page.
+  maxPageWidth = 800,
+  zoom,
+  ...props
+}: EnvelopePdfViewerProps) => {
   const { t } = useLingui();
 
   const $el = useRef<HTMLDivElement>(null);
@@ -48,7 +57,9 @@ export const EnvelopePdfViewer = ({ errorMessage, className, ...props }: Envelop
     <PDFViewerLazy
       key={`${currentEnvelopeItem.envelopeId}-${currentEnvelopeItem.id}`}
       {...props}
-      className={cn('h-full w-full max-w-[800px]', className)}
+      zoom={zoom}
+      maxPageWidth={maxPageWidth}
+      className={cn('h-full w-full', className)}
       data={currentEnvelopeItem.data}
     />
   );

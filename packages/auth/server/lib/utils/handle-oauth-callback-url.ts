@@ -174,7 +174,13 @@ export const handleOAuthCallbackUrl = async (options: HandleOAuthCallbackUrlOpti
     return user;
   });
 
-  await onCreateUserHook(createdUser).catch((err) => {
+  // RVHOOP FORK ADDITION. Without this a staff member who reaches /signin
+  // directly — rather than clicking through from the Landlord Portal, which
+  // provisions them first — is handed a Personal Organisation and Personal
+  // Team. That is a workspace outside every park, where none of the per-park
+  // scoping or the templates-only lockdown's assumptions hold. RVHoop's bridge
+  // is the only thing that may create a workspace here.
+  await onCreateUserHook(createdUser, { skipPersonalOrganisation: true }).catch((err) => {
     // Todo: (RR7) Add logging.
     console.error(err);
   });

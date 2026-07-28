@@ -11,13 +11,12 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@documenso/ui/primitives/dropdown-menu';
 import { msg } from '@lingui/core/macro';
 import { useLingui } from '@lingui/react';
 import { Trans } from '@lingui/react/macro';
-import { ChevronsUpDown, Plus } from 'lucide-react';
+import { ChevronsUpDown } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router';
 
@@ -58,14 +57,17 @@ export const MenuSwitcher = () => {
       </DropdownMenuTrigger>
 
       <DropdownMenuContent className={cn('z-[60] ml-6 w-full min-w-[12rem] md:ml-0')} align="end" forceMount>
-        <DropdownMenuItem className="px-4 py-2 text-muted-foreground" asChild>
-          <Link to="/settings/organisations?action=add-organisation" className="flex items-center justify-between">
-            <Trans>Create Organisation</Trans>
-            <Plus className="ml-2 h-4 w-4" />
-          </Link>
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
+        {/*
+          RVHOOP FORK ADDITION. Create Organisation, Personal Inbox and User
+          settings are gone for the same reason as in `org-menu-switcher.tsx`:
+          organisations are created by RVHoop's provisioning bridge, and nothing
+          is ever sent from or received in this workspace.
 
+          This switcher only renders under `isPersonalLayout`, which no
+          RVHoop-provisioned user is ever in — new accounts are created without a
+          personal organisation. It is stripped anyway so a pre-existing personal
+          account can't use it as a way around the lockdown.
+        */}
         {isUserAdmin && (
           <DropdownMenuItem className="px-4 py-2 text-muted-foreground" asChild>
             <Link to="/admin">
@@ -73,18 +75,6 @@ export const MenuSwitcher = () => {
             </Link>
           </DropdownMenuItem>
         )}
-
-        <DropdownMenuItem className="px-4 py-2 text-muted-foreground" asChild>
-          <Link to="/inbox">
-            <Trans>Personal Inbox</Trans>
-          </Link>
-        </DropdownMenuItem>
-
-        <DropdownMenuItem className="px-4 py-2 text-muted-foreground" asChild>
-          <Link to="/settings/profile">
-            <Trans>User settings</Trans>
-          </Link>
-        </DropdownMenuItem>
 
         <DropdownMenuItem className="px-4 py-2 text-muted-foreground" onClick={() => setLanguageSwitcherOpen(true)}>
           <Trans>Language</Trans>

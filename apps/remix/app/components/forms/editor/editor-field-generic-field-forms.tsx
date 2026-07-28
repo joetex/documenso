@@ -3,6 +3,8 @@ import {
   FIELD_MAX_LINE_HEIGHT,
   FIELD_MIN_LETTER_SPACING,
   FIELD_MIN_LINE_HEIGHT,
+  MAX_FIELD_FONT_SIZE,
+  MIN_FIELD_FONT_SIZE,
 } from '@documenso/lib/types/field-meta';
 import { cn } from '@documenso/ui/lib/utils';
 import { Checkbox } from '@documenso/ui/primitives/checkbox';
@@ -40,8 +42,8 @@ export const EditorGenericFontSizeField = ({
             <Input
               data-testid="field-form-fontSize"
               type="number"
-              min={8}
-              max={96}
+              min={MIN_FIELD_FONT_SIZE}
+              max={MAX_FIELD_FONT_SIZE}
               className="bg-background"
               placeholder={t`Field font size`}
               {...field}

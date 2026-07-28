@@ -4,6 +4,7 @@ import { ZEditorRecipientsFormSchema } from '@documenso/lib/client-only/hooks/us
 import { useCurrentEnvelopeEditor } from '@documenso/lib/client-only/providers/envelope-editor-provider';
 import { useCurrentOrganisation } from '@documenso/lib/client-only/providers/organisation';
 import { useOptionalSession } from '@documenso/lib/client-only/providers/session';
+import { RECIPIENT_ROLES_DESCRIPTION } from '@documenso/lib/constants/recipient-roles';
 import type { TDetectedRecipientSchema } from '@documenso/lib/server-only/ai/envelope/detect-recipients/schema';
 import { ZRecipientAuthOptionsSchema } from '@documenso/lib/types/document-auth';
 import { nanoid } from '@documenso/lib/universal/id';
@@ -20,6 +21,7 @@ import {
   type RecipientAutoCompleteOption,
 } from '@documenso/ui/components/recipient/recipient-autocomplete-input';
 import { RecipientRoleSelect } from '@documenso/ui/components/recipient/recipient-role-select';
+import { getRecipientColorStyles } from '@documenso/ui/lib/recipient-colors';
 import { cn } from '@documenso/ui/lib/utils';
 import { Alert, AlertDescription } from '@documenso/ui/primitives/alert';
 import { Button } from '@documenso/ui/primitives/button';
@@ -47,13 +49,24 @@ import { AiRecipientDetectionDialog } from '~/components/dialogs/ai-recipient-de
 import { useCurrentTeam } from '~/providers/team';
 
 export const EnvelopeEditorRecipientForm = () => {
-  const { envelope, setRecipientsDebounced, updateEnvelope, editorRecipients, isEmbedded, editorConfig } =
+  const { envelope, setRecipientsDebounced, updateEnvelope, editorRecipients, isEmbedded, editorConfig, isTemplate } =
     useCurrentEnvelopeEditor();
+
+  /**
+   * RVHOOP FORK ADDITION. A template's recipients are anonymous slots.
+   *
+   * Nobody signs a template — RVHoop raises a document from it for one stay and
+   * addresses it to that stay's guest, so a name or email typed here is either
+   * overwritten or, worse, kept and shown to a guest who is not that person.
+   * The slot is what the author is really placing fields for, so that is all
+   * this step collects: how many, in what order, doing what.
+   */
+  const hideRecipientIdentity = isTemplate;
 
   const organisation = useCurrentOrganisation();
   const team = useCurrentTeam();
 
-  const { t } = useLingui();
+  const { t, i18n } = useLingui();
   const { toast } = useToast();
   const { remaining } = useLimits();
   const { sessionData } = useOptionalSession();
@@ -171,6 +184,33 @@ export const EnvelopeEditorRecipientForm = () => {
     name: 'signers',
     keyName: 'nativeId',
   });
+
+  /**
+   * RVHOOP FORK ADDITION. Where a recipient row sits in the envelope's own
+   * recipient list. Both the row's name and its colour are read from this, so
+   * they cannot disagree with each other or with the Add Fields step, which
+   * colours a field by the same position (`getRecipientColorKey`).
+   *
+   * The fallback is load-bearing. Autosaving recipients updates the envelope but
+   * deliberately does NOT reset this form — resetting mid-edit would throw away
+   * whatever is being typed — so a row added in this session keeps `id:
+   * undefined` even after it has been saved and given one. Looking that up finds
+   * nothing, and "nothing" would otherwise clamp to the first colour and paint
+   * every new signer green. Its own row is where it will have landed.
+   */
+  const placeholderSignerPosition = (index: number) => {
+    const signerId = watchedSigners[index]?.id;
+
+    const position = signerId === undefined ? -1 : envelope.recipients.findIndex((r) => r.id === signerId);
+
+    return position === -1 ? index : position;
+  };
+
+  const placeholderSignerLabel = (index: number) => {
+    const roleName = i18n._(RECIPIENT_ROLES_DESCRIPTION[watchedSigners[index]?.role ?? RecipientRole.SIGNER].roleName);
+
+    return `${roleName} ${placeholderSignerPosition(index) + 1}`;
+  };
 
   const emptySignerIndex = watchedSigners.findIndex(
     (signer) =>
@@ -598,12 +638,21 @@ export const EnvelopeEditorRecipientForm = () => {
             <Trans>Recipients</Trans>
           </CardTitle>
           <CardDescription className="mt-1.5">
-            <Trans>Add recipients to your document</Trans>
+            {hideRecipientIdentity ? (
+              // RVHOOP FORK ADDITION. Says where the names went, so the absence
+              // of an email box reads as deliberate rather than broken.
+              <Trans>
+                Add a signer for each person who signs this document. Who they are is filled in from the booking when
+                RVHoop sends it — you are placing slots here, not people.
+              </Trans>
+            ) : (
+              <Trans>Add recipients to your document</Trans>
+            )}
           </CardDescription>
         </div>
 
         <div className="flex flex-row items-center space-x-2">
-          {editorConfig.recipients?.allowAIDetection && (
+          {editorConfig.recipients?.allowAIDetection && !hideRecipientIdentity && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -627,7 +676,8 @@ export const EnvelopeEditorRecipientForm = () => {
             </Tooltip>
           )}
 
-          {(!isEmbedded || hasCurrentEditorInfo) && (
+          {/* RVHOOP FORK ADDITION: "Add Myself" fills in an identity, and a template holds none. */}
+          {(!isEmbedded || hasCurrentEditorInfo) && !hideRecipientIdentity && (
             <Button
               variant="outline"
               className="flex flex-row items-center"
@@ -889,98 +939,129 @@ export const EnvelopeEditorRecipientForm = () => {
                                   />
                                 )}
 
-                                <FormField
-                                  control={form.control}
-                                  name={`signers.${index}.email`}
-                                  render={({ field }) => (
-                                    <FormItem
-                                      className={cn('relative w-full', {
-                                        'mb-6':
-                                          form.formState.errors.signers?.[index] &&
-                                          !form.formState.errors.signers[index]?.email,
-                                      })}
-                                    >
-                                      {!showAdvancedSettings && index === 0 && (
-                                        <FormLabel>
-                                          <Trans>Email</Trans>
-                                        </FormLabel>
+                                {/*
+                                  RVHOOP FORK ADDITION. The email and name boxes,
+                                  replaced by the slot's own name in the colour its
+                                  fields are drawn in — the one thing about a
+                                  template recipient that is actually true.
+                                */}
+                                {hideRecipientIdentity && (
+                                  <div className="w-full">
+                                    {!showAdvancedSettings && index === 0 && (
+                                      <p className="mb-2 font-medium text-foreground text-sm">
+                                        <Trans>Signer</Trans>
+                                      </p>
+                                    )}
+
+                                    <div
+                                      className={cn(
+                                        'flex h-10 items-center rounded-md bg-background px-3',
+                                        getRecipientColorStyles(placeholderSignerPosition(index)).comboBoxTrigger,
                                       )}
-
-                                      <FormControl>
-                                        <RecipientAutoCompleteInput
-                                          type="email"
-                                          placeholder={t`Email`}
-                                          value={field.value}
-                                          disabled={
-                                            snapshot.isDragging ||
-                                            isSubmitting ||
-                                            !canRecipientBeModified(signer.id) ||
-                                            isDirectRecipient
-                                          }
-                                          options={recipientSuggestions}
-                                          onSelect={(suggestion) =>
-                                            handleRecipientAutoCompleteSelect(index, suggestion)
-                                          }
-                                          onSearchQueryChange={(query) => {
-                                            field.onChange(query);
-                                            setRecipientSearchQuery(query);
-                                          }}
-                                          loading={isLoading}
-                                          data-testid="signer-email-input"
-                                          maxLength={254}
-                                        />
-                                      </FormControl>
-
-                                      <FormMessage />
-                                    </FormItem>
-                                  )}
-                                />
-
-                                <FormField
-                                  control={form.control}
-                                  name={`signers.${index}.name`}
-                                  render={({ field }) => (
-                                    <FormItem
-                                      className={cn('w-full', {
-                                        'mb-6':
-                                          form.formState.errors.signers?.[index] &&
-                                          !form.formState.errors.signers[index]?.name,
-                                      })}
                                     >
-                                      {!showAdvancedSettings && index === 0 && (
-                                        <FormLabel>
-                                          <Trans>Name</Trans>
-                                        </FormLabel>
-                                      )}
+                                      <span className="truncate font-medium text-foreground text-sm">
+                                        {placeholderSignerLabel(index)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
 
-                                      <FormControl>
-                                        <RecipientAutoCompleteInput
-                                          type="text"
-                                          placeholder={t`Recipient ${index + 1}`}
-                                          {...field}
-                                          disabled={
-                                            snapshot.isDragging ||
-                                            isSubmitting ||
-                                            !canRecipientBeModified(signer.id) ||
-                                            isDirectRecipient
-                                          }
-                                          options={recipientSuggestions}
-                                          onSelect={(suggestion) =>
-                                            handleRecipientAutoCompleteSelect(index, suggestion)
-                                          }
-                                          onSearchQueryChange={(query) => {
-                                            field.onChange(query);
-                                            setRecipientSearchQuery(query);
-                                          }}
-                                          loading={isLoading}
-                                          maxLength={255}
-                                        />
-                                      </FormControl>
+                                {!hideRecipientIdentity && (
+                                  <>
+                                  <FormField
+                                    control={form.control}
+                                    name={`signers.${index}.email`}
+                                    render={({ field }) => (
+                                      <FormItem
+                                        className={cn('relative w-full', {
+                                          'mb-6':
+                                            form.formState.errors.signers?.[index] &&
+                                            !form.formState.errors.signers[index]?.email,
+                                        })}
+                                      >
+                                        {!showAdvancedSettings && index === 0 && (
+                                          <FormLabel>
+                                            <Trans>Email</Trans>
+                                          </FormLabel>
+                                        )}
 
-                                      <FormMessage />
-                                    </FormItem>
-                                  )}
-                                />
+                                        <FormControl>
+                                          <RecipientAutoCompleteInput
+                                            type="email"
+                                            placeholder={t`Email`}
+                                            value={field.value}
+                                            disabled={
+                                              snapshot.isDragging ||
+                                              isSubmitting ||
+                                              !canRecipientBeModified(signer.id) ||
+                                              isDirectRecipient
+                                            }
+                                            options={recipientSuggestions}
+                                            onSelect={(suggestion) =>
+                                              handleRecipientAutoCompleteSelect(index, suggestion)
+                                            }
+                                            onSearchQueryChange={(query) => {
+                                              field.onChange(query);
+                                              setRecipientSearchQuery(query);
+                                            }}
+                                            loading={isLoading}
+                                            data-testid="signer-email-input"
+                                            maxLength={254}
+                                          />
+                                        </FormControl>
+
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+
+                                  <FormField
+                                    control={form.control}
+                                    name={`signers.${index}.name`}
+                                    render={({ field }) => (
+                                      <FormItem
+                                        className={cn('w-full', {
+                                          'mb-6':
+                                            form.formState.errors.signers?.[index] &&
+                                            !form.formState.errors.signers[index]?.name,
+                                        })}
+                                      >
+                                        {!showAdvancedSettings && index === 0 && (
+                                          <FormLabel>
+                                            <Trans>Name</Trans>
+                                          </FormLabel>
+                                        )}
+
+                                        <FormControl>
+                                          <RecipientAutoCompleteInput
+                                            type="text"
+                                            placeholder={t`Recipient ${index + 1}`}
+                                            {...field}
+                                            disabled={
+                                              snapshot.isDragging ||
+                                              isSubmitting ||
+                                              !canRecipientBeModified(signer.id) ||
+                                              isDirectRecipient
+                                            }
+                                            options={recipientSuggestions}
+                                            onSelect={(suggestion) =>
+                                              handleRecipientAutoCompleteSelect(index, suggestion)
+                                            }
+                                            onSearchQueryChange={(query) => {
+                                              field.onChange(query);
+                                              setRecipientSearchQuery(query);
+                                            }}
+                                            loading={isLoading}
+                                            maxLength={255}
+                                          />
+                                        </FormControl>
+
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                  </>
+                                )}
 
                                 <FormField
                                   control={form.control}

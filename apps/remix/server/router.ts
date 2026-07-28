@@ -27,6 +27,7 @@ import type { Logger } from 'pino';
 import { aiRoute } from './api/ai/route';
 import { downloadRoute } from './api/download/download';
 import { filesRoute } from './api/files/files';
+import { rvhoopSyncRoute } from './api/rvhoop/sync';
 import { type AppContext, appContext } from './context';
 import { appMiddleware } from './middleware';
 import { securityHeadersMiddleware } from './security-headers';
@@ -113,6 +114,10 @@ app.route('/api/ai', aiRoute);
 
 // CSC OAuth routes (mounted from @documenso/ee).
 app.route('/api/csc', csc);
+
+// RVHOOP FORK ADDITION. The provisioning bridge. Authenticated by a shared
+// secret, not a session — the caller is the RVHoop backend, not a browser.
+app.route('/api/rvhoop', rvhoopSyncRoute);
 
 // API servers.
 app.route('/api/v1', tsRestHonoApp);

@@ -128,10 +128,24 @@ export const DEFAULT_EDITOR_CONFIG: EnvelopeEditorConfig = {
   },
   actions: {
     allowAttachments: true,
-    allowDistributing: true,
-    allowDirectLink: true,
+    // RVHOOP FORK ADDITION. Three actions off, for the reasons in
+    // `constants/rvhoop-lockdown.ts`:
+    //
+    // - `allowDistributing` gates "Send Document", "Resend Document" and "Use
+    //   Template" together. RVHoop raises documents against a stay it knows
+    //   about; one sent from here would exist against nothing.
+    // - `allowDirectLink` publishes a public signing URL, which is a send by
+    //   another name.
+    // - `allowSaveAsTemplate` turns a document into a template, and there are no
+    //   documents in this workspace to turn.
+    //
+    // All three tRPC procedures are denied for a browser session anyway; this is
+    // the UI catching up with the guard. Attachments, duplication, download and
+    // deletion stay — they are all part of maintaining a template.
+    allowDistributing: false,
+    allowDirectLink: false,
     allowDuplication: true,
-    allowSaveAsTemplate: true,
+    allowSaveAsTemplate: false,
     allowDownloadPDF: true,
     allowDeletion: true,
   },

@@ -2,11 +2,9 @@ import LogoImage from '@documenso/assets/logo.png';
 import { authClient } from '@documenso/auth/client';
 import { useSession } from '@documenso/lib/client-only/providers/session';
 import { isPersonalLayout } from '@documenso/lib/utils/organisations';
-import { trpc } from '@documenso/trpc/react';
 import { Sheet, SheetContent } from '@documenso/ui/primitives/sheet';
 import { ThemeSwitcher } from '@documenso/ui/primitives/theme-switcher';
 import { Trans, useLingui } from '@lingui/react/macro';
-import { ReadStatus } from '@prisma/client';
 import { useMemo } from 'react';
 import { Link } from 'react-router';
 
@@ -24,15 +22,6 @@ export const AppNavMobile = ({ isMenuOpen, onMenuOpenChange }: AppNavMobileProps
 
   const currentTeam = useOptionalCurrentTeam();
 
-  const { data: unreadCountData } = trpc.document.inbox.getCount.useQuery(
-    {
-      readStatus: ReadStatus.NOT_OPENED,
-    },
-    {
-      // refetchInterval: 30000, // Refetch every 30 seconds
-    },
-  );
-
   const handleMenuItemClick = () => {
     onMenuOpenChange?.(false);
   };
@@ -44,35 +33,17 @@ export const AppNavMobile = ({ isMenuOpen, onMenuOpenChange }: AppNavMobileProps
       teamUrl = organisations[0].teams[0]?.url || null;
     }
 
+    // RVHOOP FORK ADDITION. Templates and nothing else — no Documents, no
+    // Inbox, no Settings. Each of those is either a send surface or an access
+    // surface, and both belong to RVHoop.
     if (!teamUrl) {
-      return [
-        {
-          href: '/inbox',
-          text: t`Inbox`,
-        },
-        {
-          href: '/settings/profile',
-          text: t`Settings`,
-        },
-      ];
+      return [];
     }
 
     return [
       {
-        href: `/t/${teamUrl}/documents`,
-        text: t`Documents`,
-      },
-      {
         href: `/t/${teamUrl}/templates`,
         text: t`Templates`,
-      },
-      {
-        href: '/inbox',
-        text: t`Inbox`,
-      },
-      {
-        href: '/settings/profile',
-        text: t`Settings`,
       },
     ];
   }, [currentTeam, organisations]);
@@ -93,11 +64,6 @@ export const AppNavMobile = ({ isMenuOpen, onMenuOpenChange }: AppNavMobileProps
               onClick={() => handleMenuItemClick()}
             >
               {text}
-              {href === '/inbox' && unreadCountData && unreadCountData.count > 0 && (
-                <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-full bg-primary px-1.5 font-semibold text-primary-foreground text-xs">
-                  {unreadCountData.count > 99 ? '99+' : unreadCountData.count}
-                </span>
-              )}
             </Link>
           ))}
 

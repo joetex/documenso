@@ -1,3 +1,4 @@
+import { RVHOOP_FIELD_BY_TOKEN } from '@documenso/lib/constants/rvhoop-fields';
 import {
   DEFAULT_FIELD_FONT_SIZE,
   FIELD_DEFAULT_GENERIC_ALIGN,
@@ -12,6 +13,7 @@ import { Input } from '@documenso/ui/primitives/input';
 import { Textarea } from '@documenso/ui/primitives/textarea';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Trans, useLingui } from '@lingui/react/macro';
+import { DatabaseIcon } from 'lucide-react';
 import { useEffect } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import type { z } from 'zod';
@@ -100,6 +102,13 @@ export const EditorFieldTextForm = ({
       onValueChange({
         type: 'text',
         ...validatedFormValues.data,
+        // RVHOOP FORK ADDITION. The form schema is a `pick` of the text meta, so
+        // anything it does not list is dropped from the object emitted here — and
+        // this effect runs on MOUNT, meaning merely selecting a field would strip
+        // its RVHoop binding without the manager touching a single control.
+        // Carried through explicitly rather than added to the pick: the binding is
+        // placed by the palette and is not a control on this form.
+        ...(value.rvhoop ? { rvhoop: value.rvhoop } : {}),
       });
     }
   }, [formValues]);
@@ -108,6 +117,31 @@ export const EditorFieldTextForm = ({
     <Form {...form}>
       <form>
         <fieldset className="flex flex-col gap-2">
+          {/*
+            RVHOOP FORK ADDITION. Without this the panel looks like any other
+            text field, and the obvious thing to do with "Add text" is to type
+            the value in — which RVHoop then overwrites at send time. Say so.
+          */}
+          {value.rvhoop && (
+            <div className="mb-1 rounded-md border border-border bg-muted/50 p-2.5">
+              <p className="flex items-center gap-x-1.5 font-medium text-foreground text-xs">
+                <DatabaseIcon className="h-3.5 w-3.5 shrink-0" />
+                <Trans>Filled by RVHoop</Trans>
+              </p>
+              <p className="mt-1 text-muted-foreground text-xs">
+                {RVHOOP_FIELD_BY_TOKEN[value.rvhoop.token]?.description ?? (
+                  <Trans>This field is filled from the booking when the document is sent.</Trans>
+                )}
+              </p>
+              <p className="mt-1 text-muted-foreground text-xs">
+                <Trans>
+                  The text below is only a placeholder — it is replaced with the real value, so there is no need to type
+                  one.
+                </Trans>
+              </p>
+            </div>
+          )}
+
           <EditorGenericFontSizeField className="w-full" formControl={form.control} />
 
           <div className="flex w-full flex-row gap-x-4">

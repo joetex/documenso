@@ -28,8 +28,36 @@ const LOW_RENDER_RESOLUTION = 1;
 const HIGH_RENDER_RESOLUTION = 2;
 const IDLE_RENDER_DELAY = 200;
 
+/**
+ * RVHOOP FORK ADDITION. Ceiling on the scale a page canvas is rasterised at.
+ *
+ * Without it, zoom multiplies straight into the canvas: a letter page at 3x on a
+ * wide viewer asks for a ~30 megapixel bitmap per page, which is ~120MB of RGBA
+ * and enough to take a phone down. At 3 the canvas stays under 5 megapixels and
+ * is still denser than the CSS pixels it is drawn into for every zoom we offer,
+ * so the page reads sharp — the cap costs nothing until it is actually needed.
+ */
+const MAX_RENDER_SCALE = 3;
+
 export type PDFViewerProps = {
   className?: string;
+
+  /**
+   * RVHOOP FORK ADDITION. Page magnification, where 1 is "fit the viewer".
+   *
+   * Pages are re-rasterised at the zoomed scale rather than CSS-scaled, so
+   * zooming in to read small print gets sharper text and not a bigger blur.
+   * Above 1 the pages can be wider than the viewer, which scrolls horizontally.
+   */
+  zoom?: number;
+
+  /**
+   * RVHOOP FORK ADDITION. Widest a page is drawn at zoom 1, in pixels.
+   *
+   * The viewer element itself spans whatever space it is given so that zooming
+   * can spend it; this is what keeps the page a readable width when it isn't.
+   */
+  maxPageWidth?: number;
 
   /**
    * The PDF data to render.
@@ -64,6 +92,8 @@ export default function PDFViewer({
   scrollParentRef,
   onDocumentLoad,
   customPageRenderer,
+  zoom = 1,
+  maxPageWidth,
   ...props
 }: PDFViewerProps) {
   const { t } = useLingui();
@@ -207,6 +237,8 @@ export default function PDFViewer({
           pages={pages}
           pdf={pdfRef.current}
           customPageRenderer={customPageRenderer}
+          zoom={zoom}
+          maxPageWidth={maxPageWidth}
         />
       )}
     </div>
@@ -220,7 +252,20 @@ type VirtualizedPageListProps = {
   numPages: number;
   pdf: pdfjsLib.PDFDocumentProxy;
   customPageRenderer?: React.FunctionComponent<{ pageData: PageRenderData }>;
+  zoom: number;
+  maxPageWidth?: number;
 };
+
+/**
+ * RVHOOP FORK ADDITION. The width a page is drawn at.
+ *
+ * `availableWidth` is what the viewer element measures; the page takes that,
+ * capped at `maxPageWidth` so it stays readable in a wide viewer, then the zoom
+ * multiplies it. The result is allowed to exceed the available width — that is
+ * what makes the list scroll sideways instead of shrinking the page back.
+ */
+const resolvePageWidth = (availableWidth: number, zoom: number, maxPageWidth?: number) =>
+  Math.min(availableWidth, maxPageWidth ?? Number.POSITIVE_INFINITY) * zoom;
 
 const VirtualizedPageList = ({
   scrollParentRef,
@@ -229,6 +274,8 @@ const VirtualizedPageList = ({
   numPages,
   pdf,
   customPageRenderer,
+  zoom,
+  maxPageWidth,
 }: VirtualizedPageListProps) => {
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -242,7 +289,7 @@ const VirtualizedPageList = ({
 
       // Calculate height based on aspect ratio and available width
       const aspectRatio = pageMeta.height / pageMeta.width;
-      const scaledHeight = width * aspectRatio;
+      const scaledHeight = resolvePageWidth(width, zoom, maxPageWidth) * aspectRatio;
 
       // Add 32px for the page number text and margins (my-2 = 8px * 2 + text height ~16px)
       // Add additional 2px for the top and bottom borders.
@@ -253,6 +300,8 @@ const VirtualizedPageList = ({
 
   useScrollToPage(contentRef, scrollToItem);
 
+  const pageWidth = resolvePageWidth(constraintWidth, zoom, maxPageWidth);
+
   return (
     <div
       ref={contentRef}
@@ -261,7 +310,14 @@ const VirtualizedPageList = ({
       data-page-count={numPages}
       style={{
         height: `${totalSize}px`,
-        width: '100%',
+        // RVHOOP FORK ADDITION. A zoomed page is allowed to be wider than the
+        // viewer; the overflow is left to the surrounding scroll container, which
+        // is a window-height box and so puts its scrollbar somewhere reachable —
+        // a scroller wrapped around the page list itself would hide the bar
+        // thousands of pixels down, at the end of the last page.
+        width: `${pageWidth}px`,
+        // Centred while it fits, so zooming out doesn't strand the page on the left.
+        marginInline: 'auto',
         position: 'relative',
       }}
     >
@@ -270,8 +326,8 @@ const VirtualizedPageList = ({
         const pageMeta = pages[index];
         const pageNumber = index + 1;
 
-        // Calculate scale based on constraint width
-        const scale = constraintWidth / pageMeta.width;
+        // Calculate scale based on the width the page is drawn at
+        const scale = pageWidth / pageMeta.width;
 
         const scaledWidth = Math.floor(pageMeta.width * scale);
         const scaledHeight = Math.floor(pageMeta.height * scale);
@@ -283,7 +339,7 @@ const VirtualizedPageList = ({
               position: 'absolute',
               top: 0,
               left: 0,
-              width: constraintWidth,
+              width: pageWidth,
               height: `${virtualItem.size}px`,
               transform: `translateY(${virtualItem.start}px)`,
             }}
@@ -422,7 +478,9 @@ const usePdfPageImage = ({ pageNumber, pdf, scale, scaledWidth, scaledHeight }: 
           return;
         }
 
-        const renderScale = scale * resolution;
+        // RVHOOP FORK ADDITION: capped, so zooming in can't ask for a canvas
+        // measured in hundreds of megabytes. See MAX_RENDER_SCALE.
+        const renderScale = Math.min(scale * resolution, MAX_RENDER_SCALE);
         const viewport = page.getViewport({ scale: renderScale });
         const canvas = document.createElement('canvas');
         canvas.width = Math.floor(viewport.width);

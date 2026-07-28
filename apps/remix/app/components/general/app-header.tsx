@@ -1,11 +1,8 @@
 import { useSession } from '@documenso/lib/client-only/providers/session';
 import { isPersonalLayout } from '@documenso/lib/utils/organisations';
 import { getRootHref } from '@documenso/lib/utils/params';
-import { trpc } from '@documenso/trpc/react';
 import { cn } from '@documenso/ui/lib/utils';
-import { Button } from '@documenso/ui/primitives/button';
-import { ReadStatus } from '@prisma/client';
-import { InboxIcon, MenuIcon, SearchIcon } from 'lucide-react';
+import { MenuIcon, SearchIcon } from 'lucide-react';
 import { type HTMLAttributes, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 
@@ -28,14 +25,10 @@ export const Header = ({ className, ...props }: HeaderProps) => {
   const [isHamburgerMenuOpen, setIsHamburgerMenuOpen] = useState(false);
   const [scrollY, setScrollY] = useState(0);
 
-  const { data: unreadCountData } = trpc.document.inbox.getCount.useQuery(
-    {
-      readStatus: ReadStatus.NOT_OPENED,
-    },
-    {
-      // refetchInterval: 30000, // Refetch every 30 seconds
-    },
-  );
+  // RVHOOP FORK ADDITION. The personal inbox and its unread badge are gone: an
+  // inbox holds documents somebody sent you, and nothing is sent from here. The
+  // `document.inbox.getCount` query that fed the badge is off the session
+  // allowlist, so leaving it would have polled a 403 on every page.
 
   useEffect(() => {
     const onScroll = () => {
@@ -65,18 +58,6 @@ export const Header = ({ className, ...props }: HeaderProps) => {
         </Link>
 
         <AppNavDesktop setIsCommandMenuOpen={setIsCommandMenuOpen} />
-
-        <Button asChild variant="outline" className="relative hidden h-10 w-10 rounded-lg md:flex">
-          <Link to="/inbox" className="relative block h-10 w-10">
-            <InboxIcon className="h-5 w-5 flex-shrink-0 text-muted-foreground transition-colors hover:text-foreground" />
-
-            {unreadCountData && unreadCountData.count > 0 && (
-              <span className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-primary font-semibold text-[10px] text-primary-foreground">
-                {unreadCountData.count > 99 ? '99+' : unreadCountData.count}
-              </span>
-            )}
-          </Link>
-        </Button>
 
         <div className="md:ml-4">{isPersonalLayout(organisations) ? <MenuSwitcher /> : <OrgMenuSwitcher />}</div>
 

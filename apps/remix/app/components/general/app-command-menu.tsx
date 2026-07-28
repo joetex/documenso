@@ -1,11 +1,7 @@
 import { useDebouncedValue } from '@documenso/lib/client-only/hooks/use-debounced-value';
 import { useSession } from '@documenso/lib/client-only/providers/session';
 import { SUPPORTED_LANGUAGES } from '@documenso/lib/constants/i18n';
-import {
-  DOCUMENTS_PAGE_SHORTCUT,
-  SETTINGS_PAGE_SHORTCUT,
-  TEMPLATES_PAGE_SHORTCUT,
-} from '@documenso/lib/constants/keyboard-shortcuts';
+import { TEMPLATES_PAGE_SHORTCUT } from '@documenso/lib/constants/keyboard-shortcuts';
 import { DO_NOT_INVALIDATE_QUERY_ON_MUTATION, SKIP_QUERY_BATCH_META } from '@documenso/lib/constants/trpc';
 import { dynamicActivate } from '@documenso/lib/utils/i18n';
 import { trpc as trpcReact } from '@documenso/trpc/react';
@@ -23,18 +19,14 @@ import {
   ArrowLeftIcon,
   CheckIcon,
   CornerDownLeftIcon,
-  FileTextIcon,
   GlobeIcon,
-  KeyRoundIcon,
   LanguagesIcon,
   LayoutTemplateIcon,
   LoaderIcon,
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
-  SettingsIcon,
   SunIcon,
-  UserIcon,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
@@ -96,29 +88,9 @@ export const AppCommandMenu = ({ open, onOpenChange }: AppCommandMenuProps) => {
 
   const hasValidSearch = trimmedSearch.length > 0;
 
-  const {
-    data: searchDocumentsData,
-    isFetching: isFetchingDocuments,
-    isError: isDocumentsSearchError,
-  } = trpcReact.document.search.useQuery(
-    {
-      query: debouncedSearch,
-    },
-    {
-      // Sub pages filter their own local lists, so the searches pause while
-      // one is open.
-      enabled: isPromptOpen && activePage === null && hasValidSearch,
-      placeholderData: keepPreviousData,
-      // Show immediate failure instead of a long spinner.
-      retry: false,
-
-      // Do not batch this due to relatively long request time compared to
-      // other queries which are generally batched with this.
-      ...SKIP_QUERY_BATCH_META,
-      ...DO_NOT_INVALIDATE_QUERY_ON_MUTATION,
-    },
-  );
-
+  // RVHOOP FORK ADDITION. The document search is gone with the rest of the
+  // document surface — `document.search` is off the session allowlist, so it
+  // would have been a guaranteed error on every keystroke.
   const {
     data: searchTemplatesData,
     isFetching: isFetchingTemplates,
@@ -128,9 +100,15 @@ export const AppCommandMenu = ({ open, onOpenChange }: AppCommandMenuProps) => {
       query: debouncedSearch,
     },
     {
+      // Sub pages filter their own local lists, so the search pauses while one
+      // is open.
       enabled: isPromptOpen && activePage === null && hasValidSearch,
       placeholderData: keepPreviousData,
+      // Show immediate failure instead of a long spinner.
       retry: false,
+
+      // Do not batch this due to relatively long request time compared to
+      // other queries which are generally batched with this.
       ...SKIP_QUERY_BATCH_META,
       ...DO_NOT_INVALIDATE_QUERY_ON_MUTATION,
     },
@@ -235,42 +213,6 @@ export const AppCommandMenu = ({ open, onOpenChange }: AppCommandMenuProps) => {
   );
 
   const categories = useMemo(() => {
-    const documentPageLinks: PromptItem[] = teamUrl
-      ? [
-          {
-            id: 'documents-all',
-            label: msg`All documents`,
-            path: `/t/${teamUrl}/documents?status=ALL`,
-            icon: FileTextIcon,
-            shortcut: DOCUMENTS_PAGE_SHORTCUT.replace('+', ''),
-          },
-          {
-            id: 'documents-draft',
-            label: msg`Draft documents`,
-            path: `/t/${teamUrl}/documents?status=DRAFT`,
-            icon: FileTextIcon,
-          },
-          {
-            id: 'documents-completed',
-            label: msg`Completed documents`,
-            path: `/t/${teamUrl}/documents?status=COMPLETED`,
-            icon: FileTextIcon,
-          },
-          {
-            id: 'documents-pending',
-            label: msg`Pending documents`,
-            path: `/t/${teamUrl}/documents?status=PENDING`,
-            icon: FileTextIcon,
-          },
-          {
-            id: 'documents-inbox',
-            label: msg`Inbox documents`,
-            path: `/t/${teamUrl}/documents?status=INBOX`,
-            icon: FileTextIcon,
-          },
-        ]
-      : [];
-
     const templatePageLinks: PromptItem[] = teamUrl
       ? [
           {
@@ -283,16 +225,10 @@ export const AppCommandMenu = ({ open, onOpenChange }: AppCommandMenuProps) => {
         ]
       : [];
 
+    // RVHOOP FORK ADDITION. What survives of the settings group is the two
+    // entries that change nothing but this browser: every other destination was
+    // an account or organisation page, which the lockdown blocks.
     const settingsLinks: PromptItem[] = [
-      {
-        id: 'settings-main',
-        label: msg`Settings`,
-        path: '/settings',
-        icon: SettingsIcon,
-        shortcut: SETTINGS_PAGE_SHORTCUT.replace('+', ''),
-      },
-      { id: 'settings-profile', label: msg`Profile`, path: '/settings/profile', icon: UserIcon },
-      { id: 'settings-password', label: msg`Password`, path: '/settings/security', icon: KeyRoundIcon },
       {
         id: 'settings-language',
         label: msg`Change language`,
@@ -301,16 +237,6 @@ export const AppCommandMenu = ({ open, onOpenChange }: AppCommandMenuProps) => {
       },
       { id: 'settings-theme', label: msg`Change theme`, icon: PaletteIcon, onAction: () => goToPage('theme') },
     ];
-
-    const personalDocumentItems: PromptItem[] =
-      hasValidSearch && searchDocumentsData
-        ? searchDocumentsData.map((document) => ({
-            id: `personal-document-${document.path}`,
-            label: document.title,
-            path: document.path,
-            icon: FileTextIcon,
-          }))
-        : [];
 
     const personalTemplateItems: PromptItem[] =
       hasValidSearch && searchTemplatesData
@@ -322,23 +248,12 @@ export const AppCommandMenu = ({ open, onOpenChange }: AppCommandMenuProps) => {
           }))
         : [];
 
-    const documentItems = [...filterBySearch(documentPageLinks), ...personalDocumentItems];
-
     const templateItems = [...filterBySearch(templatePageLinks), ...personalTemplateItems];
 
     const settingsItems = filterBySearch(settingsLinks);
 
     const allCategories: PromptCategory[] = [
       ...adminSearchCategories,
-      {
-        id: 'documents',
-        label: msg`Documents`,
-        items: documentItems,
-        count: documentItems.length,
-        chipCount: personalDocumentItems.length > 0 ? personalDocumentItems.length : null,
-        isCapped: personalDocumentItems.length >= PERSONAL_SEARCH_RESULTS_CAP,
-        isGlobal: false,
-      },
       {
         id: 'templates',
         label: msg`Templates`,
@@ -350,7 +265,7 @@ export const AppCommandMenu = ({ open, onOpenChange }: AppCommandMenuProps) => {
       },
       {
         id: 'settings',
-        label: msg`Settings`,
+        label: msg`Preferences`,
         items: settingsItems,
         count: settingsItems.length,
         chipCount: settingsItems.length,
@@ -360,15 +275,7 @@ export const AppCommandMenu = ({ open, onOpenChange }: AppCommandMenuProps) => {
     ];
 
     return allCategories.filter((category) => category.items.length > 0);
-  }, [
-    teamUrl,
-    hasValidSearch,
-    searchDocumentsData,
-    searchTemplatesData,
-    adminSearchCategories,
-    filterBySearch,
-    goToPage,
-  ]);
+  }, [teamUrl, hasValidSearch, searchTemplatesData, adminSearchCategories, filterBySearch, goToPage]);
 
   const effectiveChip = categories.some((category) => category.id === activeChip && category.chipCount !== null)
     ? activeChip
@@ -383,27 +290,21 @@ export const AppCommandMenu = ({ open, onOpenChange }: AppCommandMenuProps) => {
   const totalAllCount = categories.reduce((total, category) => total + category.count, 0);
   const isAllCountCapped = categories.some((category) => category.isCapped);
 
-  const isAnySearchFetching = isFetchingDocuments || isFetchingTemplates || isFetchingAdminSearch;
+  const isAnySearchFetching = isFetchingTemplates || isFetchingAdminSearch;
 
-  const hasSearchError = isDocumentsSearchError || isTemplatesSearchError || isAdminSearchError;
+  const hasSearchError = isTemplatesSearchError || isAdminSearchError;
 
   const formatChipCount = (count: number, isCapped: boolean) => (isCapped ? `≥${count}` : `${count}`);
 
-  const goToSettings = useCallback(() => push('/settings'), [push]);
-  const goToDocuments = useCallback(() => {
-    if (teamUrl) {
-      push(`/t/${teamUrl}/documents?status=ALL`);
-    }
-  }, [push, teamUrl]);
   const goToTemplates = useCallback(() => {
     if (teamUrl) {
       push(`/t/${teamUrl}/templates`);
     }
   }, [push, teamUrl]);
 
+  // RVHOOP FORK ADDITION. The documents and settings shortcuts are gone with
+  // their pages.
   useHotkeys(['ctrl+k', 'meta+k'], toggleOpen, { preventDefault: true });
-  useHotkeys(SETTINGS_PAGE_SHORTCUT, goToSettings);
-  useHotkeys(DOCUMENTS_PAGE_SHORTCUT, goToDocuments);
   useHotkeys(TEMPLATES_PAGE_SHORTCUT, goToTemplates);
 
   const handleKeyDown = (event: React.KeyboardEvent) => {

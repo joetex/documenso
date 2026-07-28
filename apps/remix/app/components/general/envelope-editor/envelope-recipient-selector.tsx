@@ -23,6 +23,16 @@ export interface EnvelopeRecipientSelectorProps {
   recipients: TEnvelopeRecipientLite[];
   fields: Field[];
   align?: 'center' | 'end' | 'start';
+
+  /**
+   * RVHOOP FORK ADDITION. Name recipients by their position — "Signer 1",
+   * "Signer 2" — and ignore whatever name or email they carry.
+   *
+   * Set for templates, where a recipient is a slot rather than a person: the
+   * identity arrives with the stay RVHoop raises the document for, so any name
+   * stored on the template is a leftover that nobody will ever sign under.
+   */
+  usePlaceholderLabels?: boolean;
 }
 
 export const EnvelopeRecipientSelector = ({
@@ -32,14 +42,15 @@ export const EnvelopeRecipientSelector = ({
   recipients,
   fields,
   align = 'start',
+  usePlaceholderLabels = false,
 }: EnvelopeRecipientSelectorProps) => {
   const { i18n } = useLingui();
 
   const [showRecipientsSelector, setShowRecipientsSelector] = useState(false);
 
   const getRecipientLabel = useCallback(
-    (recipient: TEnvelopeRecipientLite) => extractRecipientLabel(recipient, recipients, i18n),
-    [recipients],
+    (recipient: TEnvelopeRecipientLite) => extractRecipientLabel(recipient, recipients, i18n, usePlaceholderLabels),
+    [recipients, usePlaceholderLabels],
   );
 
   return (
@@ -72,6 +83,7 @@ export const EnvelopeRecipientSelector = ({
             setShowRecipientsSelector(false);
           }}
           recipients={recipients}
+          usePlaceholderLabels={usePlaceholderLabels}
         />
       </PopoverContent>
     </Popover>
@@ -85,6 +97,9 @@ interface EnvelopeRecipientSelectorCommandProps {
   recipients: TEnvelopeRecipientLite[];
   fields: Field[];
   placeholder?: string;
+
+  /** RVHOOP FORK ADDITION. See EnvelopeRecipientSelectorProps. */
+  usePlaceholderLabels?: boolean;
 }
 
 export const EnvelopeRecipientSelectorCommand = ({
@@ -94,6 +109,7 @@ export const EnvelopeRecipientSelectorCommand = ({
   recipients,
   fields,
   placeholder,
+  usePlaceholderLabels = false,
 }: EnvelopeRecipientSelectorCommandProps) => {
   const { t, i18n } = useLingui();
 
@@ -138,8 +154,8 @@ export const EnvelopeRecipientSelectorCommand = ({
   );
 
   const getRecipientLabel = useCallback(
-    (recipient: TEnvelopeRecipientLite) => extractRecipientLabel(recipient, recipients, i18n),
-    [recipients],
+    (recipient: TEnvelopeRecipientLite) => extractRecipientLabel(recipient, recipients, i18n, usePlaceholderLabels),
+    [recipients, usePlaceholderLabels],
   );
 
   return (
@@ -221,7 +237,37 @@ export const EnvelopeRecipientSelectorCommand = ({
   );
 };
 
-const extractRecipientLabel = (recipient: TEnvelopeRecipientLite, recipients: TEnvelopeRecipientLite[], i18n: I18n) => {
+/**
+ * RVHOOP FORK ADDITION. What a recipient with no identity is called: its role
+ * and its position, e.g. "Signer 1".
+ *
+ * Position, not signing order, because the colour a field is drawn in comes from
+ * the same position (`getRecipientColorKey`) — so "Signer 2" is always the one
+ * wearing the second colour, whichever order they sign in.
+ */
+export const recipientPlaceholderLabel = (
+  recipient: TEnvelopeRecipientLite,
+  recipients: TEnvelopeRecipientLite[],
+  i18n: I18n,
+) => {
+  const index = recipients.indexOf(recipient);
+
+  const roleName = i18n._(RECIPIENT_ROLES_DESCRIPTION[recipient.role].roleName);
+
+  return `${roleName} ${(index === -1 ? recipients.findIndex((r) => r.id === recipient.id) : index) + 1}`;
+};
+
+const extractRecipientLabel = (
+  recipient: TEnvelopeRecipientLite,
+  recipients: TEnvelopeRecipientLite[],
+  i18n: I18n,
+  // RVHOOP FORK ADDITION.
+  usePlaceholderLabels = false,
+) => {
+  if (usePlaceholderLabels) {
+    return recipientPlaceholderLabel(recipient, recipients, i18n);
+  }
+
   if (recipient.name && recipient.email) {
     return `${recipient.name} (${recipient.email})`;
   }

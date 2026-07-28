@@ -9,7 +9,7 @@ import {
 } from '@documenso/ui/primitives/dropdown-menu';
 import { Trans } from '@lingui/react/macro';
 import { DocumentStatus, EnvelopeType, type TemplateDirectLink } from '@prisma/client';
-import { Copy, Download, Edit, FolderIcon, MoreHorizontal, Pencil, Share2Icon, Trash2, Upload } from 'lucide-react';
+import { Copy, Download, Edit, FolderIcon, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 
@@ -18,8 +18,6 @@ import { EnvelopeDownloadDialog } from '../dialogs/envelope-download-dialog';
 import { EnvelopeDuplicateDialog } from '../dialogs/envelope-duplicate-dialog';
 import { EnvelopeRenameDialog } from '../dialogs/envelope-rename-dialog';
 import { EnvelopesBulkMoveDialog } from '../dialogs/envelopes-bulk-move-dialog';
-import { TemplateBulkSendDialog } from '../dialogs/template-bulk-send-dialog';
-import { TemplateDirectLinkDialog } from '../dialogs/template-direct-link-dialog';
 
 export type TemplatesTableActionDropdownProps = {
   row: {
@@ -103,36 +101,18 @@ export const TemplatesTableActionDropdown = ({
               }
             />
 
-            <TemplateDirectLinkDialog
-              templateId={row.id}
-              recipients={row.recipients}
-              directLink={row.directLink}
-              trigger={
-                <div
-                  data-testid="template-direct-link"
-                  className="relative flex cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground"
-                >
-                  <Share2Icon className="mr-2 h-4 w-4" />
-                  <Trans>Direct link</Trans>
-                </div>
-              }
-            />
-
+            {/*
+              RVHOOP FORK ADDITION. "Direct link" and "Bulk Send via CSV" are
+              gone. Both turn a template into documents on their way to signers
+              — a public signing URL and a spreadsheet of recipients — which is
+              exactly the step RVHoop owns, and neither would produce a stay
+              RVHoop knows about. Their tRPC procedures are denied for a browser
+              session too, so this is the label catching up with the guard.
+            */}
             <DropdownMenuItem onClick={() => setMoveToFolderDialogOpen(true)}>
               <FolderIcon className="mr-2 h-4 w-4" />
               <Trans>Move to Folder</Trans>
             </DropdownMenuItem>
-
-            <TemplateBulkSendDialog
-              templateId={row.id}
-              recipients={row.recipients}
-              trigger={
-                <div className="relative flex cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground">
-                  <Upload className="mr-2 h-4 w-4" />
-                  <Trans>Bulk Send via CSV</Trans>
-                </div>
-              }
-            />
 
             <EnvelopeDeleteDialog
               id={row.envelopeId}

@@ -16,6 +16,15 @@ export const FIELD_MAX_LETTER_SPACING = 100;
 
 export const DEFAULT_FIELD_FONT_SIZE = 12;
 
+/**
+ * RVHOOP FORK ADDITION. The floor was 8pt, which is larger than the body text on
+ * a good number of the leases and park-rules documents these templates are built
+ * over — a field sized to sit on one of those lines could not be given type that
+ * fitted it. Raising the ceiling is not needed; lowering the floor is.
+ */
+export const MIN_FIELD_FONT_SIZE = 4;
+export const MAX_FIELD_FONT_SIZE = 96;
+
 export const DEFAULT_SIGNATURE_OVERFLOW_MODE = 'auto';
 export const DEFAULT_DATE_OVERFLOW_MODE = 'auto';
 export const DEFAULT_EMAIL_OVERFLOW_MODE = 'auto';
@@ -70,7 +79,7 @@ export const ZBaseFieldMeta = z.object({
   placeholder: z.string().optional(),
   required: z.boolean().optional(),
   readOnly: z.boolean().optional(),
-  fontSize: z.number().min(8).max(96).default(DEFAULT_FIELD_FONT_SIZE).optional(),
+  fontSize: z.number().min(MIN_FIELD_FONT_SIZE).max(MAX_FIELD_FONT_SIZE).default(DEFAULT_FIELD_FONT_SIZE).optional(),
   overflow: ZFieldOverflowMode.optional(),
 });
 
@@ -110,6 +119,30 @@ export const ZDateFieldMeta = ZBaseFieldMeta.extend({
 
 export type TDateFieldMeta = z.infer<typeof ZDateFieldMeta>;
 
+/**
+ * RVHOOP FORK ADDITION.
+ *
+ * Binds a field to one datum from the RVHoop park-management app (a stay's start
+ * date, its monthly rate, the park's address, …). The manager drags these in from
+ * the "Pre-populated RVHoop Fields" palette in the field editor; RVHoop fills
+ * them when it raises the document for a real booking.
+ *
+ * Only the token is stored. The label, the description and the sample value all
+ * live in the catalog (`../constants/rvhoop-fields`), so improving a label
+ * reaches every template a park has already built instead of only new ones.
+ *
+ * These are TEXT fields with `readOnly: true`, never their own FieldType: each
+ * one restates a term RVHoop's billing engine already froze, so there is nothing
+ * for a signer to enter, and reusing TEXT means the whole stack — the PDF
+ * renderer, the signing page, the v1/v2 APIs, the template prefill path — needs
+ * no changes and upstream merges stay clean.
+ */
+export const ZRvhoopFieldBinding = z.object({
+  token: z.string().min(1).describe('Token from the RVHoop field catalog, e.g. "start_date".'),
+});
+
+export type TRvhoopFieldBinding = z.infer<typeof ZRvhoopFieldBinding>;
+
 export const ZTextFieldMeta = ZBaseFieldMeta.extend({
   type: z.literal('text'),
   text: z.string().optional(),
@@ -118,6 +151,7 @@ export const ZTextFieldMeta = ZBaseFieldMeta.extend({
   lineHeight: ZFieldMetaLineHeight.nullish(),
   letterSpacing: ZFieldMetaLetterSpacing.nullish(),
   verticalAlign: ZFieldMetaVerticalAlign.nullish(),
+  rvhoop: ZRvhoopFieldBinding.optional(),
 });
 
 export type TTextFieldMeta = z.infer<typeof ZTextFieldMeta>;

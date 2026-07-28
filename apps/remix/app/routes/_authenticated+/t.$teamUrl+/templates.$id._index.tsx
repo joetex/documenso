@@ -3,7 +3,7 @@ import { useSession } from '@documenso/lib/client-only/providers/session';
 import { PDF_VIEWER_ERROR_MESSAGES } from '@documenso/lib/constants/pdf-viewer-i18n';
 import { mapSecondaryIdToTemplateId } from '@documenso/lib/utils/envelope';
 import { getDocumentDataUrlForPdfViewer } from '@documenso/lib/utils/envelope-download';
-import { formatDocumentsPath, formatTemplatesPath } from '@documenso/lib/utils/teams';
+import { formatTemplatesPath } from '@documenso/lib/utils/teams';
 import { trpc } from '@documenso/trpc/react';
 import { DocumentReadOnlyFields } from '@documenso/ui/components/document/document-read-only-fields';
 import { cn } from '@documenso/ui/lib/utils';
@@ -16,18 +16,13 @@ import { DocumentSigningOrder, SigningStatus } from '@prisma/client';
 import { ChevronLeft, LucideEdit } from 'lucide-react';
 import { Link, useNavigate } from 'react-router';
 
-import { TemplateBulkSendDialog } from '~/components/dialogs/template-bulk-send-dialog';
-import { TemplateDirectLinkDialog } from '~/components/dialogs/template-direct-link-dialog';
-import { TemplateUseDialog } from '~/components/dialogs/template-use-dialog';
 import { EnvelopeRendererFileSelector } from '~/components/general/envelope-editor/envelope-file-selector';
 import { EnvelopeGenericPageRenderer } from '~/components/general/envelope-editor/envelope-generic-page-renderer';
 import { GenericErrorLayout } from '~/components/general/generic-error-layout';
 import { EnvelopePdfViewer } from '~/components/general/pdf-viewer/envelope-pdf-viewer';
 import PDFViewerLazy from '~/components/general/pdf-viewer/pdf-viewer-lazy';
 import { TemplateDirectLinkBadge } from '~/components/general/template/template-direct-link-badge';
-import { TemplatePageViewDocumentsTable } from '~/components/general/template/template-page-view-documents-table';
 import { TemplatePageViewInformation } from '~/components/general/template/template-page-view-information';
-import { TemplatePageViewRecentActivity } from '~/components/general/template/template-page-view-recent-activity';
 import { TemplatePageViewRecipients } from '~/components/general/template/template-page-view-recipients';
 import { TemplateType } from '~/components/general/template/template-type';
 import { TemplatesTableActionDropdown } from '~/components/tables/templates-table-action-dropdown';
@@ -86,7 +81,6 @@ export default function TemplatePage({ params }: Route.ComponentProps) {
     );
   }
 
-  const documentRootPath = formatDocumentsPath(team.url);
   const templateRootPath = formatTemplatesPath(team.url);
   const isOwnTeamTemplate = envelope.teamId === team?.id;
 
@@ -123,28 +117,20 @@ export default function TemplatePage({ params }: Route.ComponentProps) {
           <Trans>Templates</Trans>
         </Link>
 
+        {/*
+          RVHOOP FORK ADDITION. "Create Direct Link" and "Bulk Send via CSV" are
+          gone from here, matching the templates list: both turn a template into
+          documents on their way to signers, which is the step RVHoop owns, and
+          both of their tRPC procedures are denied for a browser session anyway.
+        */}
         <div className="flex shrink-0 flex-row space-x-4">
           {isOwnTeamTemplate && (
-            <>
-              <TemplateDirectLinkDialog
-                templateId={mapSecondaryIdToTemplateId(envelope.secondaryId)}
-                directLink={envelope.directLink}
-                recipients={envelope.recipients}
-                triggerSizeVariant="sm"
-              />
-
-              <TemplateBulkSendDialog
-                templateId={mapSecondaryIdToTemplateId(envelope.secondaryId)}
-                recipients={envelope.recipients}
-              />
-
-              <Button asChild size="sm">
-                <Link to={`${templateRootPath}/${envelope.id}/edit`}>
-                  <LucideEdit className="mr-1.5 h-3.5 w-3.5" />
-                  <Trans>Edit Template</Trans>
-                </Link>
-              </Button>
-            </>
+            <Button asChild size="sm">
+              <Link to={`${templateRootPath}/${envelope.id}/edit`}>
+                <LucideEdit className="mr-1.5 h-3.5 w-3.5" />
+                <Trans>Edit Template</Trans>
+              </Link>
+            </Button>
           )}
         </div>
       </div>
@@ -252,20 +238,22 @@ export default function TemplatePage({ params }: Route.ComponentProps) {
                 )}
               </p>
 
-              <div className="mt-4 border-t px-4 pt-4">
-                <TemplateUseDialog
-                  envelopeId={envelope.id}
-                  templateId={mapSecondaryIdToTemplateId(envelope.secondaryId)}
-                  templateSigningOrder={envelope.documentMeta?.signingOrder}
-                  recipients={envelope.recipients}
-                  documentRootPath={documentRootPath}
-                  trigger={
-                    <Button className="w-full">
-                      <Trans>Use</Trans>
-                    </Button>
-                  }
-                />
-              </div>
+              {/*
+                RVHOOP FORK ADDITION. "Use" raised a document from this template
+                and sent it, which is the one thing this workspace does not do —
+                RVHoop raises documents against a stay. Laying the template out
+                is what a manager is here for, so that is what the button does.
+              */}
+              {isOwnTeamTemplate && (
+                <div className="mt-4 border-t px-4 pt-4">
+                  <Button asChild className="w-full">
+                    <Link to={`${templateRootPath}/${envelope.id}/edit`}>
+                      <LucideEdit className="mr-1.5 h-3.5 w-3.5" />
+                      <Trans>Edit Template</Trans>
+                    </Link>
+                  </Button>
+                </div>
+              )}
             </section>
 
             {/* Template information section. */}
@@ -279,21 +267,16 @@ export default function TemplatePage({ params }: Route.ComponentProps) {
               readOnly={!isOwnTeamTemplate}
             />
 
-            {/* Recent activity section. */}
-            <TemplatePageViewRecentActivity
-              documentRootPath={documentRootPath}
-              templateId={mapSecondaryIdToTemplateId(envelope.secondaryId)}
-            />
+            {/*
+              RVHOOP FORK ADDITION. "Recent documents" and the "Documents created
+              from template" table below it are gone. Both read `document.find`,
+              which the lockdown denies for a browser session, so both rendered
+              as a permanent "Unable to load documents" — and even unblocked they
+              would answer a question this workspace doesn't own: documents raised
+              from this template belong to stays, and are listed in RVHoop.
+            */}
           </div>
         </div>
-      </div>
-
-      <div className="mt-16" id="documents">
-        <h1 className="mb-4 font-bold text-2xl">
-          <Trans>Documents created from template</Trans>
-        </h1>
-
-        <TemplatePageViewDocumentsTable templateId={mapSecondaryIdToTemplateId(envelope.secondaryId)} />
       </div>
     </div>
   );

@@ -23,6 +23,25 @@ export const createEnvelopeRoute = authenticatedProcedure
   .input(ZCreateEnvelopeRequestSchema)
   .output(ZCreateEnvelopeResponseSchema)
   .mutation(async ({ input, ctx }) => {
+    // RVHOOP FORK ADDITION. `envelope.create` is on the session allowlist in
+    // `rvhoop-lockdown.ts` because it is how a template is created, but the same
+    // procedure raises documents. The type isn't visible to the tRPC middleware
+    // (this route takes multipart form data), so the narrowing happens here,
+    // where it is already parsed. API-token callers — RVHoop's own automation —
+    // are unaffected.
+    //
+    // Widened deliberately: the middleware's inferred context pins `auth` to the
+    // literal `'api'` from its first `next()` branch, so reading it at its
+    // declared type is what makes the comparison mean what it says.
+    const auth: ApiRequestMetadata['auth'] = ctx.metadata.auth;
+
+    if (auth !== 'api' && input.payload.type !== EnvelopeType.TEMPLATE) {
+      throw new AppError(AppErrorCode.UNAUTHORIZED, {
+        message: 'Documents are raised by RVHoop. This workspace creates templates only.',
+        statusCode: 403,
+      });
+    }
+
     ctx.logger.info({
       input: {
         folderId: input.payload.folderId,

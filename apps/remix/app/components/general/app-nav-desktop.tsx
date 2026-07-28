@@ -45,11 +45,9 @@ export const AppNavDesktop = ({ className, setIsCommandMenuOpen, ...props }: App
       return [];
     }
 
+    // RVHOOP FORK ADDITION. Templates are the only screen. Documents live in
+    // RVHoop, which is what raises and sends them.
     return [
-      {
-        href: `/t/${teamUrl}/documents`,
-        label: msg`Documents`,
-      },
       {
         href: `/t/${teamUrl}/templates`,
         label: msg`Templates`,

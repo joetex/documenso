@@ -1,3 +1,4 @@
+import { isRvhoopAllowedProcedure } from '@documenso/lib/constants/rvhoop-lockdown';
 import { AppError, genericErrorCodeToTrpcErrorCodeMap } from '@documenso/lib/errors/app-error';
 import { getApiTokenByToken } from '@documenso/lib/server-only/public-api/get-api-token-by-token';
 import { assertUserNotDisabled } from '@documenso/lib/server-only/user/assert-user-not-disabled';
@@ -149,6 +150,19 @@ export const authenticatedMiddleware = t.middleware(async ({ ctx, next, path, me
   // valid (sessions aren't invalidated by `disableUser`), so we gate every
   // authenticated TRPC call here.
   assertUserNotDisabled(ctx.user);
+
+  // RVHOOP FORK ADDITION. A browser session may only do the things a template
+  // author does; see `rvhoop-lockdown.ts` for what and why. Everything above
+  // this line already returned for API-token callers, so RVHoop's own backend —
+  // which raises and sends the documents these templates produce — keeps the
+  // full surface. Signing runs on `procedure`/`maybeAuthenticatedProcedure` and
+  // never reaches here.
+  if (!isRvhoopAllowedProcedure(path)) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'This workspace is for managing templates only.',
+    });
+  }
 
   // Recreate the logger with a sub request ID to differentiate between batched
   // requests, as well as identifying attributes so every subsequent log line

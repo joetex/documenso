@@ -2,7 +2,12 @@ import { getBoundingClientRect } from '@documenso/lib/client-only/get-bounding-c
 import { useAutoSave } from '@documenso/lib/client-only/hooks/use-autosave';
 import { useDocumentElement } from '@documenso/lib/client-only/hooks/use-document-element';
 import { getPdfPagesCount, PDF_VIEWER_PAGE_SELECTOR } from '@documenso/lib/constants/pdf-viewer';
-import { type TFieldMetaSchema as FieldMeta, ZFieldMetaSchema } from '@documenso/lib/types/field-meta';
+import { type RvhoopFieldDef, rvhoopPlaceholder } from '@documenso/lib/constants/rvhoop-fields';
+import {
+  DEFAULT_FIELD_FONT_SIZE,
+  type TFieldMetaSchema as FieldMeta,
+  ZFieldMetaSchema,
+} from '@documenso/lib/types/field-meta';
 import type { TRecipientLite } from '@documenso/lib/types/recipient';
 import { nanoid } from '@documenso/lib/universal/id';
 import { ADVANCED_FIELD_TYPES_WITH_OPTIONAL_SETTING } from '@documenso/lib/utils/advanced-fields-helpers';
@@ -44,6 +49,7 @@ import {
 import { FieldItem } from './field-item';
 import { FieldAdvancedSettings } from './field-item-advanced-settings';
 import { MissingSignatureFieldDialog } from './missing-signature-field-dialog';
+import { RvhoopFieldPalette } from './rvhoop-field-palette';
 import { type DocumentFlowStep, FRIENDLY_FIELD_TYPE } from './types';
 
 const MIN_HEIGHT_PX = 12;
@@ -51,6 +57,14 @@ const MIN_WIDTH_PX = 36;
 
 const DEFAULT_HEIGHT_PX = MIN_HEIGHT_PX * 2.5;
 const DEFAULT_WIDTH_PX = MIN_WIDTH_PX * 2.5;
+
+// RVHOOP FORK ADDITION. An RVHoop field arrives already holding its value, so it
+// is dropped at a size that value fits in rather than at the blank-field default
+// — a park address or an itemized breakdown landing in a 90×30 box means the
+// manager resizes every single field they place.
+const RVHOOP_WIDTH_PX = 150;
+const RVHOOP_BLOCK_WIDTH_PX = 260;
+const RVHOOP_BLOCK_HEIGHT_PX = 92;
 
 export type FieldFormType = {
   nativeId?: number;
@@ -156,6 +170,10 @@ export const AddFieldsFormPartial = ({
   });
 
   const [selectedField, setSelectedField] = useState<FieldType | null>(null);
+  // RVHOOP FORK ADDITION. Set alongside selectedField when the armed field came
+  // from the RVHoop palette; it is what turns a plain TEXT drop into a bound,
+  // read-only one. Cleared whenever the selection is (see clearSelectedField).
+  const [selectedRvhoopField, setSelectedRvhoopField] = useState<RvhoopFieldDef | null>(null);
   const [selectedSigner, setSelectedSigner] = useState<TRecipientLite | null>(null);
   const [lastActiveField, setLastActiveField] = useState<TAddFieldsFormSchema['fields'][0] | null>(null);
   const [fieldClipboard, setFieldClipboard] = useState<TAddFieldsFormSchema['fields'][0] | null>(null);
@@ -244,6 +262,46 @@ export const AddFieldsFormPartial = ({
     width: 0,
   });
 
+  // RVHOOP FORK ADDITION. The size the armed field should drop at, when it isn't
+  // the default. It lives in a ref rather than in fieldBounds directly because
+  // the MutationObserver below rewrites fieldBounds on every DOM mutation — a
+  // size written straight into fieldBounds is gone by the next render.
+  const pendingFieldBounds = useRef<{ height: number; width: number } | null>(null);
+
+  const defaultFieldBounds = () => ({ height: DEFAULT_HEIGHT_PX, width: DEFAULT_WIDTH_PX });
+
+  // Arming a field from the RVHoop palette. It drops as a read-only TEXT field
+  // carrying its token, pre-labelled, and holding a conspicuous placeholder as
+  // its text — Documenso rejects a read-only field with no text, and a document
+  // raised outside RVHoop should read as visibly unfilled rather than print an
+  // empty box where the rent belongs.
+  const onRvhoopFieldSelect = useCallback((field: RvhoopFieldDef) => {
+    pendingFieldBounds.current = field.block
+      ? { height: RVHOOP_BLOCK_HEIGHT_PX, width: RVHOOP_BLOCK_WIDTH_PX }
+      : { height: DEFAULT_HEIGHT_PX, width: RVHOOP_WIDTH_PX };
+    fieldBounds.current = pendingFieldBounds.current;
+
+    setSelectedRvhoopField(field);
+    setSelectedField(FieldType.TEXT);
+  }, []);
+
+  // Every path that drops or abandons the armed field goes through here, so an
+  // RVHoop selection can never leak into the next plain field the manager places.
+  const clearSelectedField = useCallback(() => {
+    pendingFieldBounds.current = null;
+    fieldBounds.current = defaultFieldBounds();
+    setSelectedRvhoopField(null);
+    setSelectedField(null);
+  }, []);
+
+  // Arming one of the built-in field types.
+  const onFieldTypeSelect = useCallback((type: FieldType) => {
+    pendingFieldBounds.current = null;
+    fieldBounds.current = defaultFieldBounds();
+    setSelectedRvhoopField(null);
+    setSelectedField(type);
+  }, []);
+
   const onMouseMove = useCallback(
     (event: MouseEvent) => {
       setIsFieldWithinBounds(
@@ -270,7 +328,7 @@ export const AddFieldsFormPartial = ({
         !$page ||
         !isWithinPageBounds(event, PDF_VIEWER_PAGE_SELECTOR, fieldBounds.current.width, fieldBounds.current.height)
       ) {
-        setSelectedField(null);
+        clearSelectedField();
         return;
       }
 
@@ -301,22 +359,42 @@ export const AddFieldsFormPartial = ({
         pageHeight: fieldPageHeight,
         signerEmail: selectedSigner.email,
         recipientId: selectedSigner.id,
-        fieldMeta: undefined,
+        // RVHOOP FORK ADDITION. A bound field is fully configured at drop time —
+        // read-only so the signer cannot edit a term the billing engine already
+        // froze, and never required, because Documenso treats read-only-and-
+        // required as a contradiction and would refuse to save it.
+        fieldMeta: selectedRvhoopField
+          ? ({
+              type: 'text',
+              label: selectedRvhoopField.label,
+              text: rvhoopPlaceholder(selectedRvhoopField.label),
+              readOnly: true,
+              required: false,
+              fontSize: DEFAULT_FIELD_FONT_SIZE,
+              textAlign: 'left',
+              // The whole point: RVHoop reads this back to know what to fill.
+              rvhoop: { token: selectedRvhoopField.token },
+            } satisfies FieldMeta)
+          : undefined,
       };
 
       append(field);
 
       // Only open fields with significant amount of settings (instead of just a font setting) to
       // reduce friction when adding fields.
-      if (ADVANCED_FIELD_TYPES_WITH_OPTIONAL_SETTING.includes(selectedField)) {
+      //
+      // An RVHoop field is excluded: it arrives configured, and dropping the
+      // manager into a settings panel whose first control is "Add text" invites
+      // them to overwrite the binding they just placed.
+      if (!selectedRvhoopField && ADVANCED_FIELD_TYPES_WITH_OPTIONAL_SETTING.includes(selectedField)) {
         setCurrentField(field);
         setShowAdvancedSettings(true);
       }
 
       setIsFieldWithinBounds(false);
-      setSelectedField(null);
+      clearSelectedField();
     },
-    [append, isWithinPageBounds, selectedField, selectedSigner, getPage],
+    [append, isWithinPageBounds, selectedField, selectedRvhoopField, selectedSigner, getPage, clearSelectedField],
   );
 
   const onFieldResize = useCallback(
@@ -469,7 +547,9 @@ export const AddFieldsFormPartial = ({
         return;
       }
 
-      fieldBounds.current = {
+      // RVHOOP FORK ADDITION: honour the armed field's own size instead of
+      // stamping the default back over it on the next DOM mutation.
+      fieldBounds.current = pendingFieldBounds.current ?? {
         height: Math.max(DEFAULT_HEIGHT_PX),
         width: Math.max(DEFAULT_WIDTH_PX),
       };
@@ -592,7 +672,8 @@ export const AddFieldsFormPartial = ({
                   }}
                 >
                   <span className="text-[clamp(0.425rem,25cqw,0.825rem)]">
-                    {parseMessageDescriptor(_, FRIENDLY_FIELD_TYPE[selectedField])}
+                    {/* An RVHoop field reads as what it holds, not as "Text". */}
+                    {selectedRvhoopField?.label ?? parseMessageDescriptor(_, FRIENDLY_FIELD_TYPE[selectedField])}
                   </span>
                 </div>
               )}
@@ -666,8 +747,8 @@ export const AddFieldsFormPartial = ({
                     <button
                       type="button"
                       className="group h-full w-full"
-                      onClick={() => setSelectedField(FieldType.SIGNATURE)}
-                      onMouseDown={() => setSelectedField(FieldType.SIGNATURE)}
+                      onClick={() => onFieldTypeSelect(FieldType.SIGNATURE)}
+                      onMouseDown={() => onFieldTypeSelect(FieldType.SIGNATURE)}
                       data-selected={selectedField === FieldType.SIGNATURE ? true : undefined}
                     >
                       <Card
@@ -690,8 +771,8 @@ export const AddFieldsFormPartial = ({
                     <button
                       type="button"
                       className="group h-full w-full"
-                      onClick={() => setSelectedField(FieldType.INITIALS)}
-                      onMouseDown={() => setSelectedField(FieldType.INITIALS)}
+                      onClick={() => onFieldTypeSelect(FieldType.INITIALS)}
+                      onMouseDown={() => onFieldTypeSelect(FieldType.INITIALS)}
                       data-selected={selectedField === FieldType.INITIALS ? true : undefined}
                     >
                       <Card
@@ -715,8 +796,8 @@ export const AddFieldsFormPartial = ({
                     <button
                       type="button"
                       className="group h-full w-full"
-                      onClick={() => setSelectedField(FieldType.EMAIL)}
-                      onMouseDown={() => setSelectedField(FieldType.EMAIL)}
+                      onClick={() => onFieldTypeSelect(FieldType.EMAIL)}
+                      onMouseDown={() => onFieldTypeSelect(FieldType.EMAIL)}
                       data-selected={selectedField === FieldType.EMAIL ? true : undefined}
                     >
                       <Card
@@ -740,8 +821,8 @@ export const AddFieldsFormPartial = ({
                     <button
                       type="button"
                       className="group h-full w-full"
-                      onClick={() => setSelectedField(FieldType.NAME)}
-                      onMouseDown={() => setSelectedField(FieldType.NAME)}
+                      onClick={() => onFieldTypeSelect(FieldType.NAME)}
+                      onMouseDown={() => onFieldTypeSelect(FieldType.NAME)}
                       data-selected={selectedField === FieldType.NAME ? true : undefined}
                     >
                       <Card
@@ -765,8 +846,8 @@ export const AddFieldsFormPartial = ({
                     <button
                       type="button"
                       className="group h-full w-full"
-                      onClick={() => setSelectedField(FieldType.DATE)}
-                      onMouseDown={() => setSelectedField(FieldType.DATE)}
+                      onClick={() => onFieldTypeSelect(FieldType.DATE)}
+                      onMouseDown={() => onFieldTypeSelect(FieldType.DATE)}
                       data-selected={selectedField === FieldType.DATE ? true : undefined}
                     >
                       <Card
@@ -790,8 +871,8 @@ export const AddFieldsFormPartial = ({
                     <button
                       type="button"
                       className="group h-full w-full"
-                      onClick={() => setSelectedField(FieldType.TEXT)}
-                      onMouseDown={() => setSelectedField(FieldType.TEXT)}
+                      onClick={() => onFieldTypeSelect(FieldType.TEXT)}
+                      onMouseDown={() => onFieldTypeSelect(FieldType.TEXT)}
                       data-selected={selectedField === FieldType.TEXT ? true : undefined}
                     >
                       <Card
@@ -815,8 +896,8 @@ export const AddFieldsFormPartial = ({
                     <button
                       type="button"
                       className="group h-full w-full"
-                      onClick={() => setSelectedField(FieldType.NUMBER)}
-                      onMouseDown={() => setSelectedField(FieldType.NUMBER)}
+                      onClick={() => onFieldTypeSelect(FieldType.NUMBER)}
+                      onMouseDown={() => onFieldTypeSelect(FieldType.NUMBER)}
                       data-selected={selectedField === FieldType.NUMBER ? true : undefined}
                     >
                       <Card
@@ -840,8 +921,8 @@ export const AddFieldsFormPartial = ({
                     <button
                       type="button"
                       className="group h-full w-full"
-                      onClick={() => setSelectedField(FieldType.RADIO)}
-                      onMouseDown={() => setSelectedField(FieldType.RADIO)}
+                      onClick={() => onFieldTypeSelect(FieldType.RADIO)}
+                      onMouseDown={() => onFieldTypeSelect(FieldType.RADIO)}
                       data-selected={selectedField === FieldType.RADIO ? true : undefined}
                     >
                       <Card
@@ -865,8 +946,8 @@ export const AddFieldsFormPartial = ({
                     <button
                       type="button"
                       className="group h-full w-full"
-                      onClick={() => setSelectedField(FieldType.CHECKBOX)}
-                      onMouseDown={() => setSelectedField(FieldType.CHECKBOX)}
+                      onClick={() => onFieldTypeSelect(FieldType.CHECKBOX)}
+                      onMouseDown={() => onFieldTypeSelect(FieldType.CHECKBOX)}
                       data-selected={selectedField === FieldType.CHECKBOX ? true : undefined}
                     >
                       <Card
@@ -890,8 +971,8 @@ export const AddFieldsFormPartial = ({
                     <button
                       type="button"
                       className="group h-full w-full"
-                      onClick={() => setSelectedField(FieldType.DROPDOWN)}
-                      onMouseDown={() => setSelectedField(FieldType.DROPDOWN)}
+                      onClick={() => onFieldTypeSelect(FieldType.DROPDOWN)}
+                      onMouseDown={() => onFieldTypeSelect(FieldType.DROPDOWN)}
                       data-selected={selectedField === FieldType.DROPDOWN ? true : undefined}
                     >
                       <Card
@@ -912,6 +993,19 @@ export const AddFieldsFormPartial = ({
                       </Card>
                     </button>
                   </fieldset>
+
+                  {/*
+                    RVHOOP FORK ADDITION. Below the generic field types
+                    deliberately: a manager reaching for a signature or a date
+                    still finds those first, and the pre-populated fields then
+                    read as what they are — a shortcut past retyping data RVHoop
+                    already holds — rather than as a competing set of primitives.
+                  */}
+                  <RvhoopFieldPalette
+                    disabled={isFieldsDisabled}
+                    selectedToken={selectedRvhoopField?.token ?? null}
+                    onSelect={onRvhoopFieldSelect}
+                  />
                 </div>
               </Form>
             </div>
