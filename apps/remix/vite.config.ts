@@ -31,6 +31,16 @@ export default defineConfig({
   server: {
     port: parseInt(process.env.PORT || '3000', 10),
     strictPort: true,
+    // Vite rejects requests whose Host it does not recognise, which a tunnel in
+    // front of this dev server always trips. Extra hosts via ALLOWED_HOSTS
+    // (comma-separated, no scheme).
+    allowedHosts: [
+      'localhostesign.rvhoop.com',
+      ...(process.env.ALLOWED_HOSTS || '')
+        .split(',')
+        .map((host) => host.trim())
+        .filter(Boolean),
+    ],
   },
   plugins: [
     viteStaticCopy({
